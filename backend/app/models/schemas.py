@@ -4,20 +4,36 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
-from app.models.db import CandidateState
+from app.models.db import CandidateStatus
 
 
 class JobCreate(BaseModel):
     title: str = Field(min_length=1, max_length=200)
-    description: str = Field(min_length=20)
+    requirements_text: str = Field(min_length=20)
 
 
 class JobRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: UUID
     title: str
-    description: str
+    requirements_text: str
     created_at: datetime
+
+
+class CandidateCreate(BaseModel):
+    """Initial resume upload. Resume text is supplied after file extraction."""
+
+    job_id: UUID
+    full_name: str = Field(min_length=1, max_length=200)
+    email: EmailStr
+    original_resume_text: str = Field(min_length=1)
+
+
+class CandidateUpdate(BaseModel):
+    """Partial update for state transitions and scoring. All fields optional."""
+
+    status: CandidateStatus | None = None
+    ai_evaluation_score: float | None = None
 
 
 class CandidateRead(BaseModel):
@@ -26,15 +42,15 @@ class CandidateRead(BaseModel):
     job_id: UUID
     full_name: str
     email: EmailStr
-    match_score: float | None
-    state: CandidateState
+    ai_evaluation_score: float | None
+    status: CandidateStatus
     created_at: datetime
 
 
 class UploadResult(BaseModel):
     candidate_id: UUID
-    state: CandidateState
-    match_score: float | None = None
+    status: CandidateStatus
+    ai_evaluation_score: float | None = None
     advanced: bool
 
 

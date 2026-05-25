@@ -14,7 +14,7 @@ router = APIRouter()
 
 @router.post("", response_model=JobRead, status_code=201)
 async def create_job(body: JobCreate, session: AsyncSession = Depends(get_session)) -> JobRead:
-    jd = JobDescription(title=body.title, description=body.description)
+    jd = JobDescription(title=body.title, requirements_text=body.requirements_text)
     session.add(jd)
     await session.commit()
     await session.refresh(jd)

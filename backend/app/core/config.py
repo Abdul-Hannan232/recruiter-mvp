@@ -19,15 +19,18 @@ class Settings(BaseSettings):
     SUPABASE_URL: str | None = None
     SUPABASE_KEY: str | None = None
 
-    # OpenAI
+    # OpenAI (chat + realtime interview)
     OPENAI_API_KEY: str = ""
-    OPENAI_EMBED_MODEL: str = "text-embedding-3-small"
     OPENAI_CHAT_MODEL: str = "gpt-4o-mini"
     OPENAI_REALTIME_MODEL: str = "gpt-4o-realtime-preview"
 
+    # Gemini (embeddings)
+    GEMINI_API_KEY: str = ""
+    GEMINI_EMBED_MODEL: str = "text-embedding-004"
+
     # Pipeline gates (Agent 2 hard threshold)
     MATCH_THRESHOLD: float = 0.72
-    EMBED_DIM: int = 1536
+    EMBED_DIM: int = 768  # Gemini text-embedding-004
 
     # Auth
     JWT_SECRET: str = "change-me"

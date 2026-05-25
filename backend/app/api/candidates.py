@@ -43,7 +43,7 @@ async def upload_resume(
         raise HTTPException(422, "Could not extract any text from the resume")
 
     candidate = Candidate(
-        job_id=job_id, full_name=full_name, email=email, resume_text=text
+        job_id=job_id, full_name=full_name, email=email, original_resume_text=text
     )
     session.add(candidate)
     await session.commit()

@@ -1,21 +1,19 @@
-"""Candidate state transitions. Centralised so the funnel is auditable."""
+"""Candidate status transitions. Centralised so the funnel is auditable."""
 from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.db import Candidate, CandidateState
+from app.models.db import Candidate, CandidateStatus
 
 
-_ALLOWED: dict[CandidateState, set[CandidateState]] = {
-    CandidateState.UPLOADED: {CandidateState.VECTORIZED, CandidateState.REJECTED},
-    CandidateState.VECTORIZED: {CandidateState.MATCHED, CandidateState.REJECTED},
-    CandidateState.MATCHED: {CandidateState.CONTACTED, CandidateState.REJECTED},
-    CandidateState.CONTACTED: {CandidateState.INTERVIEWING, CandidateState.REJECTED},
-    CandidateState.INTERVIEWING: {CandidateState.INTERVIEWED, CandidateState.REJECTED},
-    CandidateState.INTERVIEWED: {CandidateState.EVALUATED},
-    CandidateState.EVALUATED: set(),
-    CandidateState.REJECTED: set(),
+_ALLOWED: dict[CandidateStatus, set[CandidateStatus]] = {
+    CandidateStatus.POOL: {CandidateStatus.MATCHED, CandidateStatus.REJECTED},
+    CandidateStatus.MATCHED: {CandidateStatus.OUTREACH_SENT, CandidateStatus.REJECTED},
+    CandidateStatus.OUTREACH_SENT: {CandidateStatus.INTERVIEW_SCHEDULED, CandidateStatus.REJECTED},
+    CandidateStatus.INTERVIEW_SCHEDULED: {CandidateStatus.HIRED, CandidateStatus.REJECTED},
+    CandidateStatus.HIRED: set(),
+    CandidateStatus.REJECTED: set(),
 }
 
 
@@ -26,14 +24,14 @@ class IllegalTransition(RuntimeError):
 async def transition(
     session: AsyncSession,
     candidate_id: UUID,
-    target: CandidateState,
+    target: CandidateStatus,
 ) -> Candidate:
     candidate = await session.get(Candidate, candidate_id)
     if candidate is None:
         raise IllegalTransition(f"Candidate {candidate_id} not found")
-    if target not in _ALLOWED[candidate.state]:
-        raise IllegalTransition(f"{candidate.state} -> {target} not permitted")
-    candidate.state = target
+    if target not in _ALLOWED[candidate.status]:
+        raise IllegalTransition(f"{candidate.status} -> {target} not permitted")
+    candidate.status = target
     await session.commit()
     await session.refresh(candidate)
     return candidate

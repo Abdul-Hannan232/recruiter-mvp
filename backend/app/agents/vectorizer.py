@@ -35,7 +35,7 @@ async def run(session: AsyncSession, candidate_id: UUID) -> list[float]:
     candidate = await session.get(Candidate, candidate_id)
     if candidate is None:
         raise ValueError(f"Candidate {candidate_id} not found")
-    vector = await embed(candidate.resume_text)
-    candidate.embedding = vector
+    vector = await embed(candidate.original_resume_text)
+    candidate.resume_embedding = vector
     await session.commit()
     return vector

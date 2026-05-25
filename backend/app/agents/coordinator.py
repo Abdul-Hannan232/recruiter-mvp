@@ -32,8 +32,8 @@ async def run(session: AsyncSession, candidate_id: UUID) -> str:
         raise ValueError(f"Job {candidate.job_id} not found")
 
     prompt = (
-        f"JOB TITLE: {jd.title}\n\nJOB DESCRIPTION:\n{jd.description}\n\n"
-        f"CANDIDATE NAME: {candidate.full_name}\n\nRESUME:\n{candidate.resume_text}"
+        f"JOB TITLE: {jd.title}\n\nJOB DESCRIPTION:\n{jd.requirements_text}\n\n"
+        f"CANDIDATE NAME: {candidate.full_name}\n\nRESUME:\n{candidate.original_resume_text}"
     )
     message = await chat(
         [

@@ -1,24 +1,39 @@
-"""Thin OpenAI client wrapper. Single import surface for all agents."""
+"""Thin LLM client wrappers. Single import surface for all agents.
+
+Chat + Realtime run on OpenAI; embeddings run on Google Gemini
+(text-embedding-004, 768-dim) to match the pgvector columns.
+"""
+from google import genai
+from google.genai import types
 from openai import AsyncOpenAI
 
 from app.core.config import settings
 
-_client: AsyncOpenAI | None = None
+_openai: AsyncOpenAI | None = None
+_gemini: genai.Client | None = None
 
 
 def client() -> AsyncOpenAI:
-    global _client
-    if _client is None:
-        _client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
-    return _client
+    global _openai
+    if _openai is None:
+        _openai = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+    return _openai
+
+
+def gemini() -> genai.Client:
+    global _gemini
+    if _gemini is None:
+        _gemini = genai.Client(api_key=settings.GEMINI_API_KEY)
+    return _gemini
 
 
 async def embed(text: str) -> list[float]:
-    resp = await client().embeddings.create(
-        model=settings.OPENAI_EMBED_MODEL,
-        input=text,
+    resp = await gemini().aio.models.embed_content(
+        model=settings.GEMINI_EMBED_MODEL,
+        contents=text,
+        config=types.EmbedContentConfig(output_dimensionality=settings.EMBED_DIM),
     )
-    return resp.data[0].embedding
+    return list(resp.embeddings[0].values)
 
 
 async def chat(messages: list[dict], *, temperature: float = 0.2) -> str:
