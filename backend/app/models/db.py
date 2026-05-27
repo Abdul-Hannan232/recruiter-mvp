@@ -17,7 +17,9 @@ class CandidateStatus(str, PyEnum):
     POOL = "pool"
     MATCHED = "matched"
     OUTREACH_SENT = "outreach_sent"
+    INTERVIEWING = "interviewing"
     INTERVIEW_SCHEDULED = "interview_scheduled"
+    INTERVIEW_COMPLETED = "interview_completed"
     HIRED = "hired"
     REJECTED = "rejected"
 

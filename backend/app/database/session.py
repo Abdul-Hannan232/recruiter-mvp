@@ -31,11 +31,23 @@ class Base(DeclarativeBase):
 
 async def init_db() -> None:
     """Ensure pgvector + create tables on first boot."""
-    from app.models import db as _db_models  # noqa: F401  (register mappers)
+    from app.models.db import CandidateStatus  # noqa: F401  (register mappers)
 
     async with engine.begin() as conn:
         await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
         await conn.run_sync(Base.metadata.create_all)
+
+    # create_all never ALTERs an existing enum type, so statuses added after the
+    # type was first created must be appended explicitly. Idempotent + self-healing:
+    # every boot reconciles the DB enum with the Python CandidateStatus members.
+    # ADD VALUE is run in AUTOCOMMIT (it cannot share a txn that later uses the value).
+    autocommit_engine = engine.execution_options(isolation_level="AUTOCOMMIT")
+    async with autocommit_engine.connect() as conn:
+        for status in CandidateStatus:
+            # status.name is the DB label (uppercase) and is trusted (our own enum).
+            await conn.execute(
+                text(f"ALTER TYPE candidate_status ADD VALUE IF NOT EXISTS '{status.name}'")
+            )
 
 
 async def get_session() -> AsyncIterator[AsyncSession]:

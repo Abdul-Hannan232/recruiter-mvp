@@ -7,7 +7,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agents import evaluator
+from app.agents import evaluator, interviewer
 from app.database.session import get_session
 from app.models.db import Candidate, CandidateStatus, Interview
 from app.services import state as state_svc
@@ -18,6 +18,35 @@ router = APIRouter()
 class TranscriptIn(BaseModel):
     transcript: str
     code_submissions: list[dict] | None = None
+
+
+@router.get("/{candidate_id}/webrtc-token")
+async def webrtc_token(
+    candidate_id: UUID, session: AsyncSession = Depends(get_session)
+) -> dict:
+    """Agent 4 ticket booth: mint an ephemeral WebRTC token and lock the candidate
+    into INTERVIEWING. Requires the candidate to be in OUTREACH_SENT."""
+    return await interviewer.generate_webrtc_token(candidate_id, session)
+
+
+@router.post("/{candidate_id}/complete")
+async def complete(
+    candidate_id: UUID, session: AsyncSession = Depends(get_session)
+) -> dict:
+    """Signalled by the frontend when the WebRTC call ends. Advances the candidate
+    from INTERVIEWING to INTERVIEW_COMPLETED."""
+    c = await session.get(Candidate, candidate_id)
+    if c is None:
+        raise HTTPException(404, "Candidate not found")
+    if c.status != CandidateStatus.INTERVIEWING:
+        raise HTTPException(409, f"Cannot complete interview from status {c.status.value}")
+    c.status = CandidateStatus.INTERVIEW_COMPLETED
+    await session.commit()
+    return {
+        "status": "ok",
+        "candidate_id": str(candidate_id),
+        "new_status": c.status.value,
+    }
 
 
 @router.post("/{candidate_id}/start", status_code=201)

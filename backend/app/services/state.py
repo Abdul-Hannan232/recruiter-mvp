@@ -10,8 +10,14 @@ from app.models.db import Candidate, CandidateStatus
 _ALLOWED: dict[CandidateStatus, set[CandidateStatus]] = {
     CandidateStatus.POOL: {CandidateStatus.MATCHED, CandidateStatus.REJECTED},
     CandidateStatus.MATCHED: {CandidateStatus.OUTREACH_SENT, CandidateStatus.REJECTED},
-    CandidateStatus.OUTREACH_SENT: {CandidateStatus.INTERVIEW_SCHEDULED, CandidateStatus.REJECTED},
+    CandidateStatus.OUTREACH_SENT: {
+        CandidateStatus.INTERVIEWING,
+        CandidateStatus.INTERVIEW_SCHEDULED,
+        CandidateStatus.REJECTED,
+    },
+    CandidateStatus.INTERVIEWING: {CandidateStatus.INTERVIEW_COMPLETED, CandidateStatus.REJECTED},
     CandidateStatus.INTERVIEW_SCHEDULED: {CandidateStatus.HIRED, CandidateStatus.REJECTED},
+    CandidateStatus.INTERVIEW_COMPLETED: {CandidateStatus.HIRED, CandidateStatus.REJECTED},
     CandidateStatus.HIRED: set(),
     CandidateStatus.REJECTED: set(),
 }

@@ -18,9 +18,12 @@ from dataclasses import dataclass, field
 from uuid import UUID
 
 import httpx
+from fastapi import HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.realtime import mint_ephemeral_token
+from app.models.db import Candidate, CandidateStatus
 from app.models.schemas import CodeInjectionPayload
 
 log = logging.getLogger("agents.interviewer")
@@ -63,6 +66,35 @@ class InterviewerRegistry:
 
 
 registry = InterviewerRegistry()
+
+
+async def generate_webrtc_token(candidate_id: UUID, db: AsyncSession) -> dict:
+    """Mint an ephemeral OpenAI Realtime token for the browser's WebRTC handshake.
+
+    Acts as the secure "ticket booth": it never touches audio. It verifies the
+    candidate is cleared to interview (status == OUTREACH_SENT), locks them into
+    INTERVIEWING, then returns a token the frontend uses to connect directly to
+    OpenAI. Raw audio flows browser <-> OpenAI; this server only issues the ticket.
+    """
+    candidate = await db.get(Candidate, candidate_id)
+    if candidate is None:
+        raise HTTPException(status_code=404, detail="Candidate not found")
+    if candidate.status != CandidateStatus.OUTREACH_SENT:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Candidate is not cleared to interview "
+                f"(status={candidate.status.value}, expected outreach_sent)"
+            ),
+        )
+
+    candidate.status = CandidateStatus.INTERVIEWING  # lock them into the session
+    await db.commit()
+
+    # MOCK: the live impl mints a real ephemeral token via mint_ephemeral_token()
+    # (POST https://api.openai.com/v1/realtime/sessions). The returned shape — a
+    # nested client_secret.value — mirrors OpenAI's payload, so this is a drop-in.
+    return {"client_secret": {"value": "mock_ephemeral_token_123"}}
 
 
 async def start_session(candidate_id: UUID) -> dict:

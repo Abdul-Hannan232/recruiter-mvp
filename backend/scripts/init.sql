@@ -15,8 +15,8 @@ DO $$
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'candidate_status') THEN
         CREATE TYPE candidate_status AS ENUM (
-            'POOL', 'MATCHED', 'OUTREACH_SENT',
-            'INTERVIEW_SCHEDULED', 'HIRED', 'REJECTED'
+            'POOL', 'MATCHED', 'OUTREACH_SENT', 'INTERVIEWING',
+            'INTERVIEW_SCHEDULED', 'INTERVIEW_COMPLETED', 'HIRED', 'REJECTED'
         );
     END IF;
 END$$;
