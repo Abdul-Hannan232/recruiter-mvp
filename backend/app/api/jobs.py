@@ -1,11 +1,11 @@
 """Job Description CRUD."""
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agents import matcher
+from app.agents import coordinator, matcher
 from app.agents._llm import embed
 from app.database.session import get_session
 from app.models.db import JobDescription
@@ -56,3 +56,30 @@ async def match_job(
         raise HTTPException(404, "Job not found")
     summary = await matcher.run_matching_cycle(job_id, session, top_k=top_k)
     return MatchSummary(**summary)
+
+
+@router.post("/{job_id}/outreach", status_code=202)
+async def outreach_job(
+    job_id: UUID,
+    background_tasks: BackgroundTasks,
+    response: Response,
+    wait: bool = False,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Trigger Agent 3's autonomous outreach for this job's MATCHED candidates.
+
+    Default (wait=false): schedule the cycle as a BackgroundTask and return 202
+    instantly. wait=true: await it inline and return 200 with the real summary
+    (handy for tests / synchronous callers).
+    """
+    jd = await session.get(JobDescription, job_id)
+    if jd is None:
+        raise HTTPException(404, "Job not found")
+
+    if wait:
+        summary = await coordinator.run_outreach_cycle(job_id, session)
+        response.status_code = 200
+        return summary
+
+    background_tasks.add_task(coordinator.run_outreach_cycle_bg, job_id)
+    return {"status": "accepted", "job_id": str(job_id)}
