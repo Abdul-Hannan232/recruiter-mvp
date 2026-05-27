@@ -30,6 +30,9 @@ class Settings(BaseSettings):
 
     # Pipeline gates (Agent 2 hard threshold)
     MATCH_THRESHOLD: float = 0.72
+    # Agent 2 batch matcher: max pgvector cosine DISTANCE for a pool candidate to be
+    # locked to a job. Lower = stricter. Distance is in [0, 2]; strictly < this passes.
+    MATCH_DISTANCE_THRESHOLD: float = 0.6
     EMBED_DIM: int = 768  # Gemini text-embedding-004
 
     # Auth

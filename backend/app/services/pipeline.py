@@ -1,5 +1,6 @@
 """
-Sequential funnel orchestrator. Runs Agents 1 -> 2 -> 3 inside FastAPI BackgroundTasks.
+Sequential matching funnel. Runs Agents 2 -> 3 once a pooled candidate is matched
+to a job (Agent 1 / Vectorizer already ran at upload time).
 
 Hard gate: if Agent 2's match score falls below MATCH_THRESHOLD, the candidate is
 marked REJECTED and the pipeline terminates BEFORE invoking the (expensive)
@@ -10,19 +11,22 @@ Agents 4 (Interviewer) and 5 (Evaluator) are triggered by explicit user events
 """
 from uuid import UUID
 
-from app.agents import coordinator, matcher, vectorizer
+from app.agents import coordinator, matcher
 from app.core.config import settings
 from app.database.session import SessionLocal
 from app.models.db import CandidateStatus
 from app.services import state as state_svc
 
 
-async def run_intake_pipeline(candidate_id: UUID) -> None:
-    """Agent 1 -> Agent 2 -> Agent 3 (sequential, with hard gate at Agent 2)."""
-    async with SessionLocal() as session:
-        # Agent 1 — Vectorizer (embeds the resume; candidate stays in POOL)
-        await vectorizer.run(session, candidate_id)
+async def run_matching_pipeline(candidate_id: UUID) -> None:
+    """Agent 2 -> Agent 3 (sequential, with hard gate at Agent 2).
 
+    Talent Pool architecture: Agent 1 (Vectorizer) already embedded the resume at
+    upload time, so this pipeline begins at the matcher. It is invoked once a
+    candidate has been assigned a job_id (recruiter-initiated matching), not on
+    upload.
+    """
+    async with SessionLocal() as session:
         # Agent 2 — Matcher (deterministic hard gate)
         score = await matcher.run(session, candidate_id)
         if score < settings.MATCH_THRESHOLD:

@@ -38,7 +38,12 @@ class Candidate(Base):
     __tablename__ = "candidates"
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
-    job_id: Mapped[UUID] = mapped_column(ForeignKey("job_descriptions.id", ondelete="CASCADE"))
+    # Talent Pool architecture: a candidate is ingested job-agnostically. job_id is
+    # assigned later when a recruiter matches the pool against a JD, and is cleared
+    # (not cascaded) if that JD is deleted — the candidate remains in the pool.
+    job_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("job_descriptions.id", ondelete="SET NULL"), nullable=True
+    )
     full_name: Mapped[str] = mapped_column(String(200))
     email: Mapped[str] = mapped_column(String(200), index=True)
     original_resume_text: Mapped[str] = mapped_column(Text)
@@ -50,7 +55,7 @@ class Candidate(Base):
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
-    job: Mapped[JobDescription] = relationship(back_populates="candidates")
+    job: Mapped["JobDescription | None"] = relationship(back_populates="candidates")
     interview: Mapped["Interview | None"] = relationship(back_populates="candidate", uselist=False)
 
 

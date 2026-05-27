@@ -11,7 +11,9 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       POSTGRES_DB: ${POSTGRES_DB:-recruitment}
     ports:
-      - "5432:5432"
+      # Host 54322 -> container 5432, to avoid colliding with a native
+      # PostgreSQL already bound to 5432 on the host.
+      - "54322:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./backend/scripts/init.sql:/docker-entrypoint-initdb.d/init.sql:ro

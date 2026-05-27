@@ -1,57 +1,42 @@
 """Resume upload + candidate state inspection."""
 from uuid import UUID
 
-from fastapi import (
-    APIRouter,
-    BackgroundTasks,
-    Depends,
-    File,
-    Form,
-    HTTPException,
-    UploadFile,
-)
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agents.vectorizer import UnsupportedResume, extract_text
+from app.agents import vectorizer
+from app.agents.vectorizer import EmptyResume, UnsupportedResume
 from app.database.session import get_session
-from app.models.db import Candidate, JobDescription
-from app.models.schemas import CandidateRead
-from app.services import pipeline, state as state_svc
+from app.models.schemas import CandidateRead, UploadResult
+from app.services import state as state_svc
 
 router = APIRouter()
 
 
-@router.post("/upload", response_model=CandidateRead, status_code=201)
+@router.post("/upload", response_model=UploadResult, status_code=201)
 async def upload_resume(
-    background: BackgroundTasks,
-    job_id: UUID = Form(...),
-    full_name: str = Form(...),
-    email: str = Form(...),
     file: UploadFile = File(...),
     session: AsyncSession = Depends(get_session),
-) -> CandidateRead:
-    jd = await session.get(JobDescription, job_id)
-    if jd is None:
-        raise HTTPException(404, "Job not found")
+) -> UploadResult:
+    """Talent Pool intake. Parse + extract + embed + persist inline (Agent 1).
 
+    The candidate is added job-agnostically (job_id is None). Matching against a JD
+    happens later via a recruiter-initiated flow.
+    """
     blob = await file.read()
     try:
-        text = extract_text(file.filename or "", blob)
+        candidate = await vectorizer.ingest(session, file.filename or "", blob)
     except UnsupportedResume as e:
         raise HTTPException(415, str(e)) from e
-    if not text:
-        raise HTTPException(422, "Could not extract any text from the resume")
+    except EmptyResume as e:
+        raise HTTPException(422, str(e)) from e
 
-    candidate = Candidate(
-        job_id=job_id, full_name=full_name, email=email, original_resume_text=text
+    return UploadResult(
+        candidate_id=candidate.id,
+        full_name=candidate.full_name,
+        email=candidate.email,
+        status=candidate.status,
     )
-    session.add(candidate)
-    await session.commit()
-    await session.refresh(candidate)
-
-    # Kick off Agents 1 -> 2 -> 3 in-process. Strict sequential funnel.
-    background.add_task(pipeline.run_intake_pipeline, candidate.id)
-    return CandidateRead.model_validate(candidate)
 
 
 @router.get("/{candidate_id}", response_model=CandidateRead)

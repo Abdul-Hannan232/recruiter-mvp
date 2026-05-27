@@ -20,10 +20,20 @@ class JobRead(BaseModel):
     created_at: datetime
 
 
-class CandidateCreate(BaseModel):
-    """Initial resume upload. Resume text is supplied after file extraction."""
+class MatchSummary(BaseModel):
+    """Returned by the Agent 2 batch matcher trigger."""
 
-    job_id: UUID
+    total_evaluated: int
+    matched_and_locked: int
+
+
+class CandidateCreate(BaseModel):
+    """Talent Pool intake. No job_id — candidates are ingested job-agnostically.
+
+    full_name and email are extracted from the resume by Agent 1, not supplied
+    by the caller.
+    """
+
     full_name: str = Field(min_length=1, max_length=200)
     email: EmailStr
     original_resume_text: str = Field(min_length=1)
@@ -39,7 +49,7 @@ class CandidateUpdate(BaseModel):
 class CandidateRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: UUID
-    job_id: UUID
+    job_id: UUID | None
     full_name: str
     email: EmailStr
     ai_evaluation_score: float | None
@@ -48,10 +58,12 @@ class CandidateRead(BaseModel):
 
 
 class UploadResult(BaseModel):
+    """Returned to the frontend after a successful Talent Pool upload."""
+
     candidate_id: UUID
+    full_name: str
+    email: str
     status: CandidateStatus
-    ai_evaluation_score: float | None = None
-    advanced: bool
 
 
 class EphemeralTokenResponse(BaseModel):
