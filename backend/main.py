@@ -2,7 +2,7 @@
 FastAPI entry point for the Agentic AI Recruitment System.
 
 Responsibilities:
-- Boot the ASGI app, mount REST + WebSocket routers.
+- Boot the ASGI app, mount the REST routers.
 - Initialize the SQLAlchemy engine and ensure pgvector extension.
 - Expose ephemeral OpenAI Realtime session tokens to the frontend
   (raw audio NEVER touches this server; WebRTC is browser <-> OpenAI direct).
