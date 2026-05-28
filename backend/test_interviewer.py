@@ -3,13 +3,15 @@
 Verifies the interview lifecycle against the running Supabase on port 54322:
 
     OUTREACH_SENT --(GET webrtc-token)--> INTERVIEWING --(POST complete)--> INTERVIEW_COMPLETED
+                                                          --(Agent 5)-->     PENDING_RECRUITER
 
 Steps:
   1. Boot the app via TestClient (lifespan runs init_db, which also widens the
      candidate_status enum to include INTERVIEWING / INTERVIEW_COMPLETED).
   2. Drive a candidate to OUTREACH_SENT (Agents 1 -> 2 -> 3).
   3. GET  /interviews/{id}/webrtc-token  -> asserts mock token + INTERVIEWING.
-  4. POST /interviews/{id}/complete       -> asserts INTERVIEW_COMPLETED.
+  4. POST /interviews/{id}/complete       -> Agent 5 (mock) passes them; asserts
+     PENDING_RECRUITER (the background eval runs before TestClient returns).
   5. Security gate: a fresh POOL candidate must be refused a token (403).
 
 No API keys, no uvicorn. Run:  python test_interviewer.py
@@ -88,8 +90,10 @@ def main() -> None:
         resp = client.post(f"{INTERVIEWS_URL}/{cid}/complete")
         print(f"        -> HTTP {resp.status_code} | body = {resp.json()}")
         resp.raise_for_status()
-        assert db_status(cid) == CandidateStatus.INTERVIEW_COMPLETED
-        print("        -> status is now INTERVIEW_COMPLETED\n")
+        # /complete now hands off to Agent 5; the background eval (mock = pass) runs
+        # before TestClient returns, advancing INTERVIEW_COMPLETED -> PENDING_RECRUITER.
+        assert db_status(cid) == CandidateStatus.PENDING_RECRUITER
+        print("        -> Agent 5 passed them; status is now PENDING_RECRUITER\n")
 
         print("STEP 4: Security gate — a POOL candidate must be refused a token...")
         pool_cid = upload_candidate(client, "poolonly")

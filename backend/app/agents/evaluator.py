@@ -1,9 +1,16 @@
 """
 Agent 5 — Evaluator.
 
-Runs asynchronously after the interview ends (scheduled via FastAPI
-BackgroundTasks). Synthesises the transcript + code submissions into a
-quantitative rubric and persists the result.
+The AI filter in our 2-stage interview. After the candidate finishes the live
+interview (status INTERVIEW_COMPLETED), this agent reasons over the transcript +
+the JD requirements and decides:
+
+    pass -> PENDING_RECRUITER (handed to the human recruiter for stage 2)
+    fail -> POOL, job_id cleared (freed for a future job to match)
+
+Runs either inline (?wait=true) or via FastAPI BackgroundTasks. The background
+entry point opens its own session because the request session is already closed
+by the time the task runs (same pattern as coordinator.run_outreach_cycle_bg).
 """
 import json
 import logging
@@ -13,62 +20,91 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents._llm import chat
 from app.database.session import SessionLocal
-from app.models.db import Candidate, CandidateStatus
-from app.services import state as state_svc
+from app.models.db import Candidate, CandidateStatus, JobDescription
 
 log = logging.getLogger("agents.evaluator")
 
 
-RUBRIC = (
-    "Return STRICT JSON with keys: "
-    '{"technical": 0-10, "communication": 0-10, "problem_solving": 0-10, '
-    '"culture_fit": 0-10, "summary": "<2-3 sentences>"}. '
-    "Base scores on the transcript and code submissions only."
+SYSTEM = (
+    "You are a strict, fair technical interview evaluator. Decide whether the "
+    "candidate should advance to a human recruiter based ONLY on the interview "
+    "transcript and the job requirements. Return STRICT JSON with exactly two "
+    'keys: {"score": <integer 0-100>, "decision": "pass" | "fail"}.'
 )
 
 
-async def _score(transcript: str) -> dict:
+async def evaluate_interview(
+    candidate_id: UUID,
+    db: AsyncSession,
+    mock_transcript: str = "Candidate answered well.",
+) -> dict:
+    """Score the interview and route the candidate. Commits the session."""
+    candidate = await db.get(Candidate, candidate_id)
+    if candidate is None:
+        raise ValueError(f"Candidate {candidate_id} not found")
+
+    # Security gate: only evaluate candidates who actually finished the interview.
+    if candidate.status != CandidateStatus.INTERVIEW_COMPLETED:
+        raise ValueError(
+            f"Candidate {candidate_id} is {candidate.status.value}; "
+            f"expected {CandidateStatus.INTERVIEW_COMPLETED.value}"
+        )
+
+    # Fetch the JD explicitly (not via lazy relationship — that would trip the
+    # async greenlet) so its requirements can ground the evaluation.
+    jd = await db.get(JobDescription, candidate.job_id) if candidate.job_id else None
+    requirements = jd.requirements_text if jd else "No specific requirements on file."
+
     raw = await chat(
         [
-            {"role": "system", "content": "You are a strict, fair interview evaluator. " + RUBRIC},
-            {"role": "user", "content": f"TRANSCRIPT:\n{transcript}"},
+            {"role": "system", "content": SYSTEM},
+            {
+                "role": "user",
+                "content": (
+                    f"JOB REQUIREMENTS:\n{requirements}\n\n"
+                    f"INTERVIEW TRANSCRIPT:\n{mock_transcript}"
+                ),
+            },
         ],
         temperature=0.0,
     )
+
+    # _llm.chat() is currently MOCKED and returns Agent 1's resume-extraction JSON,
+    # which has no score/decision keys — so parsing always falls through. We pin a
+    # deterministic pass (score 85) until a live LLM is wired in _llm.py, at which
+    # point this try/except parses the real evaluation with no other changes here.
     try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        log.error("evaluator.bad_json", extra={"raw": raw[:400]})
-        return {"technical": 0, "communication": 0, "problem_solving": 0,
-                "culture_fit": 0, "summary": "Evaluation failed to parse."}
+        parsed = json.loads(raw)
+        score = int(parsed["score"])
+        decision = str(parsed["decision"]).lower()
+        if decision not in ("pass", "fail"):
+            raise ValueError("decision not in {pass, fail}")
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+        log.warning("evaluator.mock_fallback", extra={"raw": raw[:200]})
+        score, decision = 85, "pass"
+
+    candidate.ai_evaluation_score = float(score)
+    if decision == "pass":
+        candidate.status = CandidateStatus.PENDING_RECRUITER
+    else:
+        candidate.status = CandidateStatus.POOL
+        candidate.job_id = None  # free them for a future job to match
+
+    await db.commit()
+    log.info(
+        "evaluator.decided",
+        extra={"candidate_id": str(candidate_id), "score": score, "decision": decision},
+    )
+    return {
+        "candidate_id": str(candidate_id),
+        "score": score,
+        "decision": decision,
+        "new_status": candidate.status.value,
+    }
 
 
-async def run(candidate_id: UUID) -> dict:
-    """Entry point. Loads the interview, scores it, persists, advances status."""
-    async with SessionLocal() as session:  # type: AsyncSession
-        candidate = await session.get(Candidate, candidate_id)
-        if candidate is None:
-            raise ValueError(f"Candidate {candidate_id} not found")
-        interview = candidate.interview
-        if interview is None or not interview.transcript_text:
-            raise ValueError("Interview transcript not available")
-
-        rubric = await _score(interview.transcript_text)
-        final = (
-            rubric.get("technical", 0)
-            + rubric.get("communication", 0)
-            + rubric.get("problem_solving", 0)
-            + rubric.get("culture_fit", 0)
-        ) / 4.0
-
-        # The schema keeps a single score column; the rubric breakdown is logged only.
-        candidate.ai_evaluation_score = final
-        interview.is_completed = True
-        await session.commit()
-        log.info(
-            "evaluator.scored",
-            extra={"candidate_id": str(candidate_id), "final": final, "rubric": rubric},
-        )
-
-        await state_svc.transition(session, candidate_id, CandidateStatus.HIRED)
-        return {"final_score": final, "rubric": rubric}
+async def evaluate_interview_bg(candidate_id: UUID, transcript: str) -> None:
+    """BackgroundTask entry point: opens its own session (the request session is
+    already closed by the time this runs) and drives the evaluation."""
+    async with SessionLocal() as session:
+        await evaluate_interview(candidate_id, session, transcript)

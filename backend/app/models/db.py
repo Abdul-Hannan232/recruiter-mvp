@@ -20,6 +20,8 @@ class CandidateStatus(str, PyEnum):
     INTERVIEWING = "interviewing"
     INTERVIEW_SCHEDULED = "interview_scheduled"
     INTERVIEW_COMPLETED = "interview_completed"
+    # Stage-1 AI filter passed; queued for the human recruiter (stage-2 interview).
+    PENDING_RECRUITER = "pending_recruiter"
     HIRED = "hired"
     REJECTED = "rejected"
 

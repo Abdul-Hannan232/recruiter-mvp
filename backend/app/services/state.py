@@ -17,7 +17,15 @@ _ALLOWED: dict[CandidateStatus, set[CandidateStatus]] = {
     },
     CandidateStatus.INTERVIEWING: {CandidateStatus.INTERVIEW_COMPLETED, CandidateStatus.REJECTED},
     CandidateStatus.INTERVIEW_SCHEDULED: {CandidateStatus.HIRED, CandidateStatus.REJECTED},
-    CandidateStatus.INTERVIEW_COMPLETED: {CandidateStatus.HIRED, CandidateStatus.REJECTED},
+    # Agent 5 (Evaluator) is the AI filter: pass -> PENDING_RECRUITER, fail -> back to POOL.
+    CandidateStatus.INTERVIEW_COMPLETED: {
+        CandidateStatus.PENDING_RECRUITER,
+        CandidateStatus.POOL,
+        CandidateStatus.HIRED,
+        CandidateStatus.REJECTED,
+    },
+    # Human recruiter (stage-2) decides the terminal outcome.
+    CandidateStatus.PENDING_RECRUITER: {CandidateStatus.HIRED, CandidateStatus.REJECTED},
     CandidateStatus.HIRED: set(),
     CandidateStatus.REJECTED: set(),
 }
