@@ -1,25 +1,20 @@
-import { Link, Route, Routes } from "react-router-dom";
-import RecruiterDashboard from "./components/RecruiterDashboard.jsx";
-import CandidateUpload from "./components/CandidateUpload.jsx";
-import InterviewRoom from "./components/InterviewRoom.jsx";
+import { Route, Routes } from "react-router-dom";
+import Navbar from "./components/Navbar.jsx";
+import Footer from "./components/Footer.jsx";
+import RecruiterDashboard from "./Pages/RecruiterDashboard.jsx";
 
+// No-auth phase: the default route renders the recruiter dashboard directly.
+// Login/Signup/AuthContext are staged on disk but intentionally not wired here.
 export default function App() {
   return (
-    <div className="min-h-full flex flex-col">
-      <header className="bg-slate-900 border-b border-slate-800 px-6 py-3 flex items-center gap-6">
-        <h1 className="text-lg font-semibold">Agentic Recruitment</h1>
-        <nav className="flex gap-4 text-sm text-slate-300">
-          <Link to="/">Dashboard</Link>
-          <Link to="/apply">Apply</Link>
-        </nav>
-      </header>
-      <main className="flex-1 p-6">
+    <div className="min-h-screen flex flex-col bg-slate-100">
+      <Navbar />
+      <main className="flex-1">
         <Routes>
           <Route path="/" element={<RecruiterDashboard />} />
-          <Route path="/apply" element={<CandidateUpload />} />
-          <Route path="/interview/:candidateId" element={<InterviewRoom />} />
         </Routes>
       </main>
+      <Footer />
     </div>
   );
 }
