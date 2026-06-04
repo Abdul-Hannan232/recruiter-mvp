@@ -6,32 +6,43 @@
  * remote model audio flow peer-to-peer with OpenAI.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Realtime } from "../services/api.js";
+import { Interviews } from "../services/api.js";
 
-const OPENAI_REALTIME_URL = "https://api.openai.com/v1/realtime";
+// GA WebRTC SDP-exchange endpoint. The legacy beta shape (POST to /v1/realtime)
+// is rejected with `beta_api_shape_disabled`; GA moved the call to /v1/realtime/calls.
+const OPENAI_REALTIME_CALLS_URL = "https://api.openai.com/v1/realtime/calls";
 
 export function useRealtime(candidateId) {
   const [status, setStatus] = useState("idle"); // idle | connecting | live | error | closed
   const [error, setError] = useState(null);
   const pcRef = useRef(null);
-  const audioRef = useRef(null);
+  const remoteAudioRef = useRef(null); // bound to a physical <audio autoPlay> in InterviewRoom
   const dcRef = useRef(null);
 
   const connect = useCallback(async () => {
     if (!candidateId) return;
     setStatus("connecting");
     try {
-      const { client_secret, model } = await Realtime.session(candidateId);
+      const { token, model } = await Interviews.getWebRtcToken(candidateId);
 
-      const pc = new RTCPeerConnection();
+	const pc = new RTCPeerConnection({
+	  iceServers: [
+	    { urls: "stun:stun.l.google.com:19302" } // Free Google STUN server to fix ICE failures
+	  ]
+	});
       pcRef.current = pc;
 
-      // Remote audio track from the model.
-      const remoteAudio = new Audio();
-      remoteAudio.autoplay = true;
-      audioRef.current = remoteAudio;
+      // Remote model audio -> attach to the on-screen <audio> element. Using a
+      // DOM node that's already mounted (rather than an in-memory Audio created
+      // after these awaits) preserves the autoplay gesture-trust from the Start
+      // click, so the stream isn't blocked.
       pc.ontrack = (e) => {
-        remoteAudio.srcObject = e.streams[0];
+        const el = remoteAudioRef.current;
+        if (!el) return;
+        el.srcObject = e.streams[0];
+        // Explicitly start playback and surface any autoplay block instead of
+        // failing silently.
+        el.play().catch(console.error);
       };
 
       // Local mic capture.
@@ -42,18 +53,64 @@ export function useRealtime(candidateId) {
       const dc = pc.createDataChannel("oai-events");
       dcRef.current = dc;
 
+      // Visibility: log everything OpenAI sends back over the channel
+      // (response lifecycle, response.audio_transcript.delta, tool calls, etc.).
+      dc.onmessage = (e) => {
+        try {
+          const event = JSON.parse(e.data);
+          console.log("oai-event", event.type, event);
+        } catch (err) {
+          console.error("oai-event parse failed", err, e.data);
+        }
+      };
+
+      // Break the silence: as soon as the channel is open, ask the model to
+      // respond so it greets the candidate first instead of waiting for speech.
+      // Request both modalities explicitly so we always get spoken audio.
+      dc.onopen = () => {
+  	console.log("Data channel opened! Triggering agent greeting...");
+  
+	  // 1. Send a hidden text message to set the context
+	  const initEvent = {
+	    type: "conversation.item.create",
+	    item: {
+	      type: "message",
+	      role: "user",
+	      content: [{ 
+		type: "input_text", 
+		text: "Hello! The interview has started. Please introduce yourself and ask me the first technical question." 
+	      }]
+	    }
+	  };
+	  dc.send(JSON.stringify(initEvent));
+	  
+	  // 2. Instruct the AI to generate a vocal response to the text we just sent
+	  dc.send(JSON.stringify({ type: "response.create" }));
+	};
+
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
 
-      const resp = await fetch(`${OPENAI_REALTIME_URL}?model=${encodeURIComponent(model)}`, {
-        method: "POST",
-        body: offer.sdp,
-        headers: {
-          Authorization: `Bearer ${client_secret}`,
-          "Content-Type": "application/sdp",
+      // GA SDP exchange. The ephemeral key carries the session, and ?model lets
+      // the /calls endpoint resolve the model explicitly — together they avoid the
+      // 404 you get when the model can't be resolved.
+      const resp = await fetch(
+        `${OPENAI_REALTIME_CALLS_URL}?model=${encodeURIComponent(model)}`,
+        {
+          method: "POST",
+          body: offer.sdp,
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/sdp",
+          },
         },
-      });
-      if (!resp.ok) throw new Error(`Realtime SDP exchange failed: ${resp.status}`);
+      );
+      if (!resp.ok) {
+        // Surface OpenAI's reason instead of a bare status — this is where the
+        // real 404 cause ("model_not_found", etc.) lives.
+        const detail = await resp.text().catch(() => "");
+        throw new Error(`Realtime SDP exchange failed: ${resp.status} ${detail}`);
+      }
       const answer = { type: "answer", sdp: await resp.text() };
       await pc.setRemoteDescription(answer);
 
@@ -74,5 +131,5 @@ export function useRealtime(candidateId) {
 
   useEffect(() => () => disconnect(), [disconnect]);
 
-  return { status, error, connect, disconnect, dataChannel: dcRef };
+  return { status, error, connect, disconnect, dataChannel: dcRef, remoteAudioRef };
 }

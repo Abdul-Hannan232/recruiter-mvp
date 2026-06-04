@@ -4,12 +4,14 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 
-export function useCodeChannel(candidateId) {
+export function useCodeChannel(candidateId, enabled = false) {
   const [ready, setReady] = useState(false);
   const wsRef = useRef(null);
 
   useEffect(() => {
-    if (!candidateId) return undefined;
+    // Deferred until `enabled`: the backend WS guard closes (1008) any candidate
+    // not yet in INTERVIEWING, so we must wait for /start to resolve first.
+    if (!candidateId || !enabled) return undefined;
     const proto = window.location.protocol === "https:" ? "wss" : "ws";
     const ws = new WebSocket(`${proto}://${window.location.host}/ws/code/${candidateId}`);
     wsRef.current = ws;
@@ -17,7 +19,7 @@ export function useCodeChannel(candidateId) {
     ws.onclose = () => setReady(false);
     ws.onerror = (e) => console.error("code-ws.error", e);
     return () => ws.close();
-  }, [candidateId]);
+  }, [candidateId, enabled]);
 
   const send = useCallback((payload) => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;

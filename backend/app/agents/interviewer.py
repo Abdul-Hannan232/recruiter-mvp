@@ -68,39 +68,65 @@ class InterviewerRegistry:
 registry = InterviewerRegistry()
 
 
+# A candidate may fetch a token on first entry (OUTREACH_SENT) or when rejoining
+# after a dropped WebRTC connection (already INTERVIEWING). Both are cleared.
+_TOKEN_ALLOWED_STATUSES = (CandidateStatus.OUTREACH_SENT, CandidateStatus.INTERVIEWING)
+
+
 async def generate_webrtc_token(candidate_id: UUID, db: AsyncSession) -> dict:
     """Mint an ephemeral OpenAI Realtime token for the browser's WebRTC handshake.
 
     Acts as the secure "ticket booth": it never touches audio. It verifies the
-    candidate is cleared to interview (status == OUTREACH_SENT), locks them into
+    candidate is cleared to interview (OUTREACH_SENT for a first attempt, or
+    INTERVIEWING when rejoining after a dropped connection), locks them into
     INTERVIEWING, then returns a token the frontend uses to connect directly to
     OpenAI. Raw audio flows browser <-> OpenAI; this server only issues the ticket.
+
+    Returns ``{"token": <client_secret>, "model": <realtime model>}``.
     """
     candidate = await db.get(Candidate, candidate_id)
     if candidate is None:
         raise HTTPException(status_code=404, detail="Candidate not found")
-    if candidate.status != CandidateStatus.OUTREACH_SENT:
+    if candidate.status not in _TOKEN_ALLOWED_STATUSES:
         raise HTTPException(
             status_code=403,
             detail=(
                 "Candidate is not cleared to interview "
-                f"(status={candidate.status.value}, expected outreach_sent)"
+                f"(status={candidate.status.value}, expected outreach_sent or interviewing)"
             ),
         )
+
+    if not settings.OPENAI_API_KEY:
+        # Server misconfiguration, not a client error.
+        raise HTTPException(status_code=500, detail="OpenAI API key is not configured")
+
+    # Mint the real ephemeral token BEFORE mutating state, so a failed upstream
+    # call doesn't strand the candidate in INTERVIEWING. mint_ephemeral_token
+    # performs the async httpx POST to /v1/realtime/sessions.
+    try:
+        payload = await mint_ephemeral_token(instructions=INTERVIEW_SYSTEM)
+        token = payload["value"]  # GA: ephemeral key is the top-level "value"
+    except httpx.HTTPError as e:
+        log.error("generate_webrtc_token.upstream_error", extra={"err": str(e)})
+        raise HTTPException(
+            status_code=500, detail="Failed to mint realtime token from OpenAI"
+        ) from e
+    except (KeyError, TypeError) as e:
+        log.error("generate_webrtc_token.bad_payload", extra={"err": str(e)})
+        raise HTTPException(
+            status_code=500, detail="Unexpected response shape from OpenAI"
+        ) from e
 
     candidate.status = CandidateStatus.INTERVIEWING  # lock them into the session
     await db.commit()
 
-    # MOCK: the live impl mints a real ephemeral token via mint_ephemeral_token()
-    # (POST https://api.openai.com/v1/realtime/sessions). The returned shape — a
-    # nested client_secret.value — mirrors OpenAI's payload, so this is a drop-in.
-    return {"client_secret": {"value": "mock_ephemeral_token_123"}}
+    return {"token": token, "model": settings.OPENAI_REALTIME_MODEL}
 
 
 async def start_session(candidate_id: UUID) -> dict:
     """Mint ephemeral token for browser WebRTC. Returns OpenAI's session payload."""
     payload = await mint_ephemeral_token(instructions=INTERVIEW_SYSTEM)
-    await registry.open(candidate_id, payload["id"])
+    await registry.open(candidate_id, payload["session"]["id"])
     return payload
 
 

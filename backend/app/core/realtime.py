@@ -12,25 +12,30 @@ import httpx
 
 from app.core.config import settings
 
-REALTIME_SESSIONS_URL = "https://api.openai.com/v1/realtime/sessions"
+# GA Realtime API: ephemeral keys are minted here. The legacy beta endpoint
+# /v1/realtime/sessions is retired and now 404s ("Invalid URL").
+REALTIME_CLIENT_SECRETS_URL = "https://api.openai.com/v1/realtime/client_secrets"
 
 
 async def mint_ephemeral_token(
     *,
-    voice: str = "verse",
+    voice: str | None = None,
     instructions: str | None = None,
 ) -> dict[str, Any]:
-    """Request a short-lived client_secret for the browser to use with WebRTC.
+    """Request a short-lived ephemeral key for the browser to use with WebRTC.
 
-    Returns the upstream payload; the frontend reads `client_secret.value`.
+    Returns the upstream payload. In the GA API the ephemeral key is the
+    top-level ``value`` (an ``ek_...`` string), and session metadata (id, etc.)
+    is nested under ``session``.
     """
-    payload: dict[str, Any] = {
+    session_cfg: dict[str, Any] = {
+        "type": "realtime",
         "model": settings.OPENAI_REALTIME_MODEL,
-        "voice": voice,
-        "modalities": ["audio", "text"],
     }
     if instructions:
-        payload["instructions"] = instructions
+        session_cfg["instructions"] = instructions
+    if voice:
+        session_cfg["audio"] = {"output": {"voice": voice}}
 
     headers = {
         "Authorization": f"Bearer {settings.OPENAI_API_KEY}",
@@ -38,6 +43,8 @@ async def mint_ephemeral_token(
     }
 
     async with httpx.AsyncClient(timeout=20.0) as client:
-        resp = await client.post(REALTIME_SESSIONS_URL, json=payload, headers=headers)
+        resp = await client.post(
+            REALTIME_CLIENT_SECRETS_URL, json={"session": session_cfg}, headers=headers
+        )
         resp.raise_for_status()
         return resp.json()

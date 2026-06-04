@@ -9,26 +9,45 @@ Steps:
   1. Boot the app via TestClient (lifespan runs init_db, which also widens the
      candidate_status enum to include INTERVIEWING / INTERVIEW_COMPLETED).
   2. Drive a candidate to OUTREACH_SENT (Agents 1 -> 2 -> 3).
-  3. GET  /interviews/{id}/webrtc-token  -> asserts mock token + INTERVIEWING.
-  4. POST /interviews/{id}/complete       -> Agent 5 (mock) passes them; asserts
+  3. GET  /interviews/{id}/webrtc-token  -> asserts {token, model} + INTERVIEWING.
+  4. WS   /ws/code/{id}                  -> accepted while INTERVIEWING.
+  5. POST /interviews/{id}/complete       -> Agent 5 (mock) passes them; asserts
      PENDING_RECRUITER (the background eval runs before TestClient returns).
-  5. Security gate: a fresh POOL candidate must be refused a token (403).
+  6. Security gates: a fresh POOL candidate must be refused a token (403) AND
+     refused a WebSocket connection (closed, code 1008).
 
-No API keys, no uvicorn. Run:  python test_interviewer.py
+The OpenAI ephemeral-token call is mocked (GA /v1/realtime/client_secrets shape),
+so this needs no API key or network. Run:  python test_interviewer.py
 """
+from unittest.mock import patch
+
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 import fitz  # PyMuPDF
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
 from app.core.config import settings
 from app.models.db import Candidate, CandidateStatus
 from main import app
 
+# Mock upstream payload mirroring OpenAI's GA client_secrets response: the
+# ephemeral key is the top-level "value"; session metadata is nested.
+MOCK_EK = "ek_mock_ephemeral_token_123"
+
+
+async def fake_mint_ephemeral_token(*, voice=None, instructions=None) -> dict:
+    return {
+        "value": MOCK_EK,
+        "expires_at": 9999999999,
+        "session": {"id": "sess_mock", "model": settings.OPENAI_REALTIME_MODEL},
+    }
+
 UPLOAD_URL = "/api/v1/candidates/upload"
 JOBS_URL = "/api/v1/jobs"
 INTERVIEWS_URL = "/api/v1/interviews"
+WS_CODE_URL = "/ws/code"
 
 
 def make_pdf(body: str) -> bytes:
@@ -61,7 +80,10 @@ def upload_candidate(client: TestClient, tag: str) -> str:
 def main() -> None:
     print(f"Using DATABASE_URL = {settings.DATABASE_URL}\n")
 
-    with TestClient(app) as client:
+    # Patch the OpenAI mint so the token pipeline runs offline with the GA shape.
+    with TestClient(app) as client, patch(
+        "app.agents.interviewer.mint_ephemeral_token", new=fake_mint_ephemeral_token
+    ):
         print("STEP 1: Driving a candidate to OUTREACH_SENT (Agents 1->2->3)...")
         cid = upload_candidate(client, "interviewee")
         resp = client.post(
@@ -82,9 +104,16 @@ def main() -> None:
         resp = client.get(f"{INTERVIEWS_URL}/{cid}/webrtc-token")
         print(f"        -> HTTP {resp.status_code} | body = {resp.json()}")
         resp.raise_for_status()
-        assert resp.json()["client_secret"]["value"] == "mock_ephemeral_token_123"
+        body = resp.json()
+        assert body["token"] == MOCK_EK, body
+        assert body["model"] == settings.OPENAI_REALTIME_MODEL, body
         assert db_status(cid) == CandidateStatus.INTERVIEWING
         print("        -> token minted; status is now INTERVIEWING\n")
+
+        print(f"STEP 2b: WS {WS_CODE_URL}/{cid} should be ACCEPTED while INTERVIEWING...")
+        with client.websocket_connect(f"{WS_CODE_URL}/{cid}") as ws:
+            ws.send_json({"language": "python", "code": "def add(a, b):\n    return a + b\n"})
+        print("        -> WebSocket accepted and code snapshot relayed\n")
 
         print(f"STEP 3: POST {INTERVIEWS_URL}/{cid}/complete ...")
         resp = client.post(f"{INTERVIEWS_URL}/{cid}/complete")
@@ -102,6 +131,14 @@ def main() -> None:
         assert resp.status_code == 403
         assert db_status(pool_cid) == CandidateStatus.POOL  # unchanged
         print("        -> refused, candidate stayed in POOL\n")
+
+        print(f"STEP 4b: WS {WS_CODE_URL}/{pool_cid} must be REJECTED for a POOL candidate...")
+        try:
+            with client.websocket_connect(f"{WS_CODE_URL}/{pool_cid}"):
+                raise AssertionError("WebSocket should have been rejected for a POOL candidate")
+        except WebSocketDisconnect as e:
+            assert e.code == 1008, f"expected policy-violation 1008, got {e.code}"
+            print("        -> WebSocket rejected (1008 policy violation)\n")
 
     print("DONE: Agent 4 state transitions verified end-to-end against the live DB.")
 

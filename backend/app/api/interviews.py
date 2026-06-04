@@ -78,5 +78,5 @@ async def start(candidate_id: UUID, session: AsyncSession = Depends(get_session)
     )
     session.add(iv)
     await session.commit()
-    await state_svc.transition(session, c.id, CandidateStatus.INTERVIEW_SCHEDULED)
+    await state_svc.transition(session, c.id, CandidateStatus.INTERVIEWING)
     return {"interview_id": str(iv.id)}

@@ -26,10 +26,7 @@ export const Interviews = {
   start: (candidateId) =>
     api.post(`/interviews/${candidateId}/start`).then((r) => r.data),
   end: (candidateId, body) =>
-    api.post(`/interviews/${candidateId}/end`, body).then((r) => r.data),
-};
-
-export const Realtime = {
-  session: (candidateId) =>
-    api.post(`/realtime/sessions/${candidateId}`).then((r) => r.data),
+    api.post(`/interviews/${candidateId}/complete`, body).then((r) => r.data),
+  getWebRtcToken: (candidateId) =>
+    api.get(`/interviews/${candidateId}/webrtc-token`).then((r) => r.data),
 };
