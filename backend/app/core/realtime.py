@@ -34,8 +34,13 @@ async def mint_ephemeral_token(
     }
     if instructions:
         session_cfg["instructions"] = instructions
-    if voice:
-        session_cfg["audio"] = {"output": {"voice": voice}}
+    # Enable input-audio transcription (whisper-1) so the CANDIDATE's speech is
+    # transcribed and emitted over the data channel — without this we'd only ever
+    # capture the interviewer's side. Output voice is merged in when supplied.
+    session_cfg["audio"] = {
+        "input": {"transcription": {"model": "whisper-1"}},
+        **({"output": {"voice": voice}} if voice else {}),
+    }
 
     headers = {
         "Authorization": f"Bearer {settings.OPENAI_API_KEY}",

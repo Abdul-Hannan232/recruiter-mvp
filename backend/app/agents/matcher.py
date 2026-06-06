@@ -68,13 +68,15 @@ async def run_matching_cycle(
     if jd.jd_embedding is None:
         raise ValueError(f"Job {job_id} has no embedding; cannot match")
 
-    # pgvector cosine distance, computed in SQL. We select the candidate row AND the
-    # distance scalar so the threshold gate runs in Python against real DB math.
+    # pgvector cosine distance, computed in SQL. We add the persistent score_penalty
+    # (set on recruiter REJECT) so previously-rejected candidates rank lower and fall
+    # below the gate — the 768-d embedding itself is never mutated. effective = d + p.
     distance = Candidate.resume_embedding.cosine_distance(jd.jd_embedding)
+    effective = (distance + Candidate.score_penalty).label("effective_distance")
     stmt = (
-        select(Candidate, distance.label("distance"))
+        select(Candidate, effective)
         .where(Candidate.status == CandidateStatus.POOL)
-        .order_by(distance)  # ascending: closest (most similar) first
+        .order_by(effective)  # ascending: closest (most similar, least penalised) first
         .limit(top_k)
     )
     rows = (await db.execute(stmt)).all()

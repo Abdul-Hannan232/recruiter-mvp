@@ -1,34 +1,46 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
+import { supabase } from '../services/supabase';
+
 const AuthContext = createContext();
 export const useAuth = () => useContext(AuthContext);
 
 export const AuthProvider = ({ children }) => {
-  const [isAuthenticated, set_Is_Authenticated] = useState(false);
-  const [userRole, set_UserRole] = useState(null);
+  const [session, setSession] = useState(null);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const storedAuth = localStorage.getItem('isAuth') === 'true';
-    const storedRole = localStorage.getItem('userRole');
-    set_Is_Authenticated(storedAuth && Boolean(storedRole));
-    set_UserRole(storedRole || null);
+    // 1. Hydrate from any persisted session on first load.
+    supabase.auth.getSession().then(({ data }) => {
+      setSession(data.session);
+      setLoading(false);
+    });
+
+    // 2. Keep in sync with sign-in / sign-out / token-refresh events.
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, newSession) => {
+      setSession(newSession);
+    });
+
+    return () => listener.subscription.unsubscribe();
   }, []);
 
-  const login = (role) => {
-    localStorage.setItem('isAuth', 'true');
-    localStorage.setItem('userRole', role);
-    set_Is_Authenticated(true);
-    set_UserRole(role);
-  };
+  const user = session?.user ?? null;
+  // Client-side role is read from user_metadata for UI routing ONLY. The backend
+  // independently resolves the authoritative role from the recruiters table.
+  const userRole = user?.user_metadata?.role ?? null;
+  const isAuthenticated = Boolean(session);
 
-  const logout = () => {
-    localStorage.removeItem('isAuth');
-    localStorage.removeItem('userRole');
-    set_Is_Authenticated(false);
-    set_UserRole(null);
-  };
+  const signIn = (email, password) =>
+    supabase.auth.signInWithPassword({ email, password });
+
+  const signUp = (email, password, metadata) =>
+    supabase.auth.signUp({ email, password, options: { data: metadata } });
+
+  const signOut = () => supabase.auth.signOut();
 
   return (
-    <AuthContext.Provider value={{ isAuthenticated, userRole, login, logout }}>
+    <AuthContext.Provider
+      value={{ session, user, userRole, isAuthenticated, loading, signIn, signUp, signOut }}
+    >
       {children}
     </AuthContext.Provider>
   );

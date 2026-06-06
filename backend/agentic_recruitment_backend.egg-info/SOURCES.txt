@@ -16,8 +16,7 @@ app/api/__init__.py
 app/api/candidates.py
 app/api/interviews.py
 app/api/jobs.py
-app/api/realtime.py
-app/api/ws.py
+app/api/realtime_ws.py
 app/core/__init__.py
 app/core/auth.py
 app/core/config.py
@@ -28,5 +27,6 @@ app/models/__init__.py
 app/models/db.py
 app/models/schemas.py
 app/services/__init__.py
+app/services/email.py
 app/services/pipeline.py
 app/services/state.py

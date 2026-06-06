@@ -1,19 +1,22 @@
 import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { FaUser, FaEnvelope, FaLock } from 'react-icons/fa';
+import { useAuth } from '../context/AuthContext';
 
 const Signup = () => {
   const navigate = useNavigate();
-  const [role, setRole] = useState('candidate');
+  const { signUp } = useAuth();
+  const [role, setRole] = useState('recruiter');
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, set_Confirm_Password] = useState('');
+  const [submitting, setSubmitting] = useState(false);
 
-  const isValid_Role = (value) => ['candidate', 'recruiter', 'admin'].includes(value);
+  const isValid_Role = (value) => ['candidate', 'recruiter'].includes(value);
   const isValid_Email = (value) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 
-  const Handle_Submit = (e) => {
+  const Handle_Submit = async (e) => {
     e.preventDefault();
     if (!isValid_Role(role)) {
       alert('Error! Please select a valid role....');
@@ -45,20 +48,30 @@ const Signup = () => {
       return;
     }
 
-    const key = `recruiterAI_user_${email.toLowerCase()}`;
-    if (localStorage.getItem(key)) {
-      alert('An account with this email already exists. Please log in or use a different email.');
+    // Register with Supabase Auth. role + full_name go into user_metadata; a
+    // Postgres trigger on auth.users uses role='recruiter' to provision the matching
+    // row in public.recruiters (so the backend can resolve RBAC on first request).
+    setSubmitting(true);
+    const { data, error } = await signUp(email.toLowerCase(), password, {
+      role,
+      full_name: fullName.trim(),
+    });
+    setSubmitting(false);
+
+    if (error) {
+      alert(error.message || 'Signup failed. Please try again.');
       return;
     }
 
-    const newUser = {
-      role,
-      fullName,
-      email: email.toLowerCase(),
-      password,
-    };
+    // With email confirmation disabled (recommended for the demo), Supabase returns
+    // an active session immediately and the user is effectively logged in. Candidates
+    // go straight to the resume-upload portal; recruiters to their dashboard.
+    if (data?.session) {
+      alert('Signup successful! You are now logged in.');
+      navigate(role === 'candidate' ? '/candidate' : '/');
+      return;
+    }
 
-    localStorage.setItem(key, JSON.stringify(newUser));
     alert('Signup successful! Please log in with your new credentials.');
     navigate('/login');
   };
@@ -90,13 +103,6 @@ const Signup = () => {
                 <input type="checkbox" name="role" value="recruiter" checked={role === 'recruiter'}
                   onChange={(e) => setRole(e.target.value)} className="h-4 w-4 accent-blue-600" />
                 Recruiter
-              </label>
-
-              <label className="inline-flex items-center gap-2 rounded-3xl border border-slate-300 bg-slate-50
-                px-4 py-3 text-sm font-medium text-slate-700 transition hover:border-blue-500">
-                <input type="checkbox" name="role" value="admin" checked={role === "admin"}
-                  onChange={(e) => setRole(e.target.value)} className="h-4 w-4 accent-blue-600" />
-                Admin
               </label>
             </div>
           </div>
@@ -134,8 +140,8 @@ const Signup = () => {
               </div>
             </div>
             
-            <button className="w-50 lg:ml-30 ml-10 mt-4 rounded-3xl bg-gradient-to-r cursor-pointer from-blue-600 to-violet-600 py-3 text-white text-sm font-semibold shadow-lg transition hover:opacity-95">
-              Create Account
+            <button type="submit" disabled={submitting} className="w-50 lg:ml-30 ml-10 mt-4 rounded-3xl bg-gradient-to-r cursor-pointer from-blue-600 to-violet-600 py-3 text-white text-sm font-semibold shadow-lg transition hover:opacity-95 disabled:opacity-60">
+              {submitting ? 'Creating...' : 'Create Account'}
             </button>
           </form>
         </div>

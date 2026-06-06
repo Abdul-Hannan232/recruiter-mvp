@@ -3,7 +3,7 @@ import { Candidates, Jobs } from "../services/api.js";
 
 export default function CandidateUpload() {
   const [jobs, setJobs] = useState([]);
-  const [form, setForm] = useState({ job_id: "", full_name: "", email: "", file: null });
+  const [form, setForm] = useState({ job_id: "", file: null });
   const [result, setResult] = useState(null);
   const [busy, setBusy] = useState(false);
 
@@ -16,10 +16,10 @@ export default function CandidateUpload() {
     if (!form.file || !form.job_id) return;
     setBusy(true);
     try {
+      // Talent Pool intake: only the resume file is sent. Agent 1 (Vectorizer)
+      // extracts full_name + email from the PDF/DOCX itself — no manual entry.
       const fd = new FormData();
       fd.append("job_id", form.job_id);
-      fd.append("full_name", form.full_name);
-      fd.append("email", form.email);
       fd.append("file", form.file);
       const data = await Candidates.upload(fd);
       setResult(data);
@@ -42,19 +42,6 @@ export default function CandidateUpload() {
             <option key={j.id} value={j.id}>{j.title}</option>
           ))}
         </select>
-        <input
-          className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm"
-          placeholder="Full name"
-          value={form.full_name}
-          onChange={(e) => setForm({ ...form, full_name: e.target.value })}
-        />
-        <input
-          type="email"
-          className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm"
-          placeholder="Email"
-          value={form.email}
-          onChange={(e) => setForm({ ...form, email: e.target.value })}
-        />
         <input
           type="file"
           accept=".pdf,.docx"

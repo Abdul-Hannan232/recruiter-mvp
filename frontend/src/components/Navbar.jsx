@@ -1,20 +1,15 @@
 import React, { useState } from 'react';
 import { Link, NavLink, useNavigate } from 'react-router-dom';
 import { FaUser, FaBars, FaTimes } from 'react-icons/fa';
-// import { useAuth } from '../context/AuthContext';
+import { useAuth } from '../context/AuthContext';
 
 const Navbar = () => {
   const [isOpen, setIsOpen] = useState(false);
   const navigate = useNavigate();
-  // TEMP (no-auth phase): mock the auth hook so the Navbar renders without an
-  // <AuthProvider> wrapper. Restore `const { isAuthenticated, userRole, logout } = useAuth();`
-  // when the auth flow is wired up.
-  const isAuthenticated = true;
-  const userRole = 'recruiter';
-  const logout = () => {};
+  const { isAuthenticated, userRole, signOut } = useAuth();
 
-  const Handle_Logout = () => {
-    logout();
+  const Handle_Logout = async () => {
+    await signOut();
     navigate('/login');
     setIsOpen(false);
   };

@@ -1,25 +1,33 @@
 """Thin LLM client wrappers. Single import surface for all agents.
 
-Chat + Realtime run on OpenAI; embeddings run on Google Gemini
-(text-embedding-004, 768-dim) to match the pgvector columns.
-"""
-from types import SimpleNamespace
+Provider split (cost/performance optimised):
+  - embed()  -> Google Gemini (gemini-embedding-001, 768-d) to match the pgvector columns.
+  - chat()   -> DeepSeek (deepseek-chat) for all text/extraction/drafting tasks.
+  - OpenAI is reserved purely for the WebRTC voice agent (see app/core/realtime.py);
+    it is intentionally NOT wired here.
 
+DeepSeek exposes an OpenAI-compatible API, so we reuse the openai SDK pointed at a
+custom base_url.
+"""
 from google import genai
 from google.genai import types
 from openai import AsyncOpenAI
 
 from app.core.config import settings
 
-_openai: AsyncOpenAI | None = None
+_deepseek: AsyncOpenAI | None = None
 _gemini: genai.Client | None = None
 
 
-def client() -> AsyncOpenAI:
-    global _openai
-    if _openai is None:
-        _openai = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
-    return _openai
+def deepseek() -> AsyncOpenAI:
+    """Lazy DeepSeek client (OpenAI-compatible) for chat/extraction tasks."""
+    global _deepseek
+    if _deepseek is None:
+        _deepseek = AsyncOpenAI(
+            api_key=settings.DEEPSEEK_API_KEY,
+            base_url=settings.DEEPSEEK_BASE_URL,
+        )
+    return _deepseek
 
 
 def gemini() -> genai.Client:
@@ -30,42 +38,37 @@ def gemini() -> genai.Client:
 
 
 async def embed(text: str) -> list[float]:
-    # --- LOCAL DEV MOCK (no API keys / no network) ---
-    # Builds a mock object that mirrors the Gemini SDK's EmbedContentResponse
-    # (resp.embeddings[0].values) and unwraps it via the SAME access path as the
-    # live call below, so this is a drop-in: uncomment the real call and the
-    # contract (a 768-d list[float]) is unchanged. Restore when wiring live keys.
-    resp = SimpleNamespace(
-        embeddings=[SimpleNamespace(values=[0.1] * settings.EMBED_DIM)]
+    """Embed text into a 768-d vector via Gemini gemini-embedding-001 (live).
+
+    output_dimensionality is pinned to EMBED_DIM so the vector always matches the
+    pgvector column width. Returns a plain list[float] — the stable contract every
+    agent depends on.
+    """
+    resp = await gemini().aio.models.embed_content(
+        model=settings.GEMINI_EMBED_MODEL,
+        contents=text,
+        config=types.EmbedContentConfig(output_dimensionality=settings.EMBED_DIM),
     )
     return list(resp.embeddings[0].values)
-    # resp = await gemini().aio.models.embed_content(
-    #     model=settings.GEMINI_EMBED_MODEL,
-    #     contents=text,
-    #     config=types.EmbedContentConfig(output_dimensionality=settings.EMBED_DIM),
-    # )
-    # return list(resp.embeddings[0].values)
 
 
-async def chat(messages: list[dict], *, temperature: float = 0.2) -> str:
-    # --- LOCAL DEV MOCK (no API keys / no network) ---
-    # Builds a mock object that mirrors the OpenAI SDK's ChatCompletion
-    # (resp.choices[0].message.content) and unwraps it via the SAME access path
-    # as the live call below. Content is the JSON shape Agent 1 expects from
-    # resume profile extraction. Restore the real OpenAI call when wiring keys.
-    resp = SimpleNamespace(
-        choices=[
-            SimpleNamespace(
-                message=SimpleNamespace(
-                    content='{"full_name": "Mock User", "email": "mock@example.com"}'
-                )
-            )
-        ]
+async def chat(
+    messages: list[dict],
+    *,
+    model: str | None = None,
+    temperature: float = 0.2,
+    response_format: dict | None = None,
+) -> str:
+    """Chat completion via DeepSeek. Callers pass an explicit V4 model id (flash for
+    extraction/drafting, pro for evaluation); defaults to flash when unspecified.
+    Pass response_format={"type": "json_object"} to force strict JSON output."""
+    kwargs: dict = {}
+    if response_format is not None:
+        kwargs["response_format"] = response_format
+    resp = await deepseek().chat.completions.create(
+        model=model or settings.DEEPSEEK_FLASH_MODEL,
+        messages=messages,
+        temperature=temperature,
+        **kwargs,
     )
     return resp.choices[0].message.content or ""
-    # resp = await client().chat.completions.create(
-    #     model=settings.OPENAI_CHAT_MODEL,
-    #     messages=messages,
-    #     temperature=temperature,
-    # )
-    # return resp.choices[0].message.content or ""

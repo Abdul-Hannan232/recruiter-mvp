@@ -4,7 +4,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
-from app.models.db import CandidateStatus
+from app.models.db import CandidateStatus, UserRole
 
 
 class JobCreate(BaseModel):
@@ -49,10 +49,15 @@ class CandidateUpdate(BaseModel):
 class CandidateRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: UUID
+    user_id: UUID | None
+    role: UserRole
     job_id: UUID | None
     full_name: str
     email: EmailStr
     ai_evaluation_score: float | None
+    evaluation_summary: str | None
+    score_penalty: float
+    interview_room_id: UUID | None
     status: CandidateStatus
     created_at: datetime
 
@@ -89,3 +94,21 @@ class EvaluationResult(BaseModel):
     candidate_id: UUID
     final_score: float
     rubric: dict
+
+
+class CodeSubmissionCreate(BaseModel):
+    """Explicit code submission from the interview room (candidate clicks Submit)."""
+
+    language: str = Field(min_length=1, max_length=50)
+    code: str = Field(min_length=1)
+    note: str | None = Field(default=None, max_length=200)
+
+
+class CodeSubmissionRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: UUID
+    candidate_id: UUID
+    language: str
+    code_text: str
+    note: str | None
+    created_at: datetime

@@ -12,18 +12,26 @@ import { Interviews } from "../services/api.js";
 // is rejected with `beta_api_shape_disabled`; GA moved the call to /v1/realtime/calls.
 const OPENAI_REALTIME_CALLS_URL = "https://api.openai.com/v1/realtime/calls";
 
-export function useRealtime(candidateId) {
+export function useRealtime(roomId) {
   const [status, setStatus] = useState("idle"); // idle | connecting | live | error | closed
   const [error, setError] = useState(null);
+  // The room token endpoint resolves room_id -> candidate_id (+ transitions the
+  // candidate to INTERVIEWING). We surface it so the code WS / complete calls,
+  // which are keyed by candidate_id, can use it.
+  const [candidateId, setCandidateId] = useState(null);
   const pcRef = useRef(null);
   const remoteAudioRef = useRef(null); // bound to a physical <audio autoPlay> in InterviewRoom
   const dcRef = useRef(null);
+  // Accumulated interview transcript: [{ role, text }] in spoken order.
+  const transcriptRef = useRef([]);
 
   const connect = useCallback(async () => {
-    if (!candidateId) return;
+    if (!roomId) return;
     setStatus("connecting");
+    transcriptRef.current = []; // fresh transcript per session
     try {
-      const { token, model } = await Interviews.getWebRtcToken(candidateId);
+      const { token, model, candidate_id } = await Interviews.getWebRtcTokenByRoom(roomId);
+      setCandidateId(candidate_id);
 
 	const pc = new RTCPeerConnection({
 	  iceServers: [
@@ -59,6 +67,20 @@ export function useRealtime(candidateId) {
         try {
           const event = JSON.parse(e.data);
           console.log("oai-event", event.type, event);
+          const t = event.type || "";
+          // Interviewer (model) speech: final per-response audio transcript.
+          // Tolerant to GA naming variants (audio_transcript / output_audio_transcript).
+          if (t.endsWith("audio_transcript.done") && event.transcript) {
+            transcriptRef.current.push({ role: "Interviewer", text: event.transcript });
+          }
+          // Candidate (user) speech: final whisper-1 input transcription (needs the
+          // input.transcription config enabled when the session was minted).
+          if (
+            t === "conversation.item.input_audio_transcription.completed" &&
+            event.transcript
+          ) {
+            transcriptRef.current.push({ role: "Candidate", text: event.transcript });
+          }
         } catch (err) {
           console.error("oai-event parse failed", err, e.data);
         }
@@ -120,7 +142,7 @@ export function useRealtime(candidateId) {
       setError(e);
       setStatus("error");
     }
-  }, [candidateId]);
+  }, [roomId]);
 
   const disconnect = useCallback(() => {
     pcRef.current?.getSenders().forEach((s) => s.track?.stop());
@@ -131,5 +153,20 @@ export function useRealtime(candidateId) {
 
   useEffect(() => () => disconnect(), [disconnect]);
 
-  return { status, error, connect, disconnect, dataChannel: dcRef, remoteAudioRef };
+  // Join the accumulated turns into a single raw transcript string for Agent 5.
+  const getTranscript = useCallback(
+    () => transcriptRef.current.map((x) => `${x.role}: ${x.text}`).join("\n"),
+    [],
+  );
+
+  return {
+    status,
+    error,
+    connect,
+    disconnect,
+    dataChannel: dcRef,
+    remoteAudioRef,
+    candidateId,
+    getTranscript,
+  };
 }

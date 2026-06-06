@@ -19,11 +19,12 @@ from uuid import UUID
 
 import httpx
 from fastapi import HTTPException
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.realtime import mint_ephemeral_token
-from app.models.db import Candidate, CandidateStatus
+from app.models.db import Candidate, CandidateStatus, CodeSubmission, JobDescription
 from app.models.schemas import CodeInjectionPayload
 
 log = logging.getLogger("agents.interviewer")
@@ -123,6 +124,79 @@ async def generate_webrtc_token(candidate_id: UUID, db: AsyncSession) -> dict:
     return {"token": token, "model": settings.OPENAI_REALTIME_MODEL}
 
 
+def _interview_instructions(candidate: Candidate, jd: JobDescription | None) -> str:
+    """Build a context-rich system prompt grounding the interviewer in this specific
+    candidate's resume and the target job — so questions probe their real experience."""
+    role_ctx = (
+        f"# ROLE\nJOB TITLE: {jd.title}\nJOB REQUIREMENTS:\n{jd.requirements_text}\n\n"
+        if jd is not None
+        else "# ROLE\n(No job description on file.)\n\n"
+    )
+    return (
+        f"{INTERVIEW_SYSTEM}\n\n"
+        f"{role_ctx}"
+        f"# CANDIDATE RESUME\n{candidate.original_resume_text}\n\n"
+        "Tailor every question to interrogate the candidate's claimed experience above "
+        "against the role's requirements. Start by greeting them by name "
+        f"({candidate.full_name}) and asking your first question."
+    )
+
+
+# Room flow (Phase 3 -> 4): a SHORTLISTED candidate enters via their tokenized link;
+# INTERVIEWING is allowed too so a dropped WebRTC connection can rejoin the same room.
+_ROOM_TOKEN_ALLOWED = (CandidateStatus.SHORTLISTED, CandidateStatus.INTERVIEWING)
+
+
+async def generate_webrtc_token_by_room(room_id: UUID, db: AsyncSession) -> dict:
+    """Phase 4 ticket booth, keyed by the Phase 3 interview_room_id.
+
+    Resolves the room -> candidate, verifies they are SHORTLISTED (or already
+    INTERVIEWING for a rejoin), grounds the Realtime session in their resume + JD,
+    mints the ephemeral token, then locks them into INTERVIEWING. Audio never touches
+    this server. Returns ``{token, model, candidate_id}`` (the frontend needs the
+    candidate_id for the code-context WS and the /complete call).
+    """
+    candidate = (
+        await db.execute(select(Candidate).where(Candidate.interview_room_id == room_id))
+    ).scalar_one_or_none()
+    if candidate is None:
+        raise HTTPException(status_code=404, detail="Invalid or expired interview room")
+    if candidate.status not in _ROOM_TOKEN_ALLOWED:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "This interview room is not active "
+                f"(status={candidate.status.value}, expected shortlisted)"
+            ),
+        )
+    if not settings.OPENAI_API_KEY:
+        raise HTTPException(status_code=500, detail="OpenAI API key is not configured")
+
+    jd = await db.get(JobDescription, candidate.job_id) if candidate.job_id else None
+    instructions = _interview_instructions(candidate, jd)
+
+    # Mint BEFORE mutating state, so an upstream failure doesn't strand the candidate.
+    try:
+        payload = await mint_ephemeral_token(instructions=instructions)
+        token = payload["value"]
+    except httpx.HTTPError as e:
+        log.error("room_token.upstream_error", extra={"err": str(e)})
+        raise HTTPException(500, "Failed to mint realtime token from OpenAI") from e
+    except (KeyError, TypeError) as e:
+        log.error("room_token.bad_payload", extra={"err": str(e)})
+        raise HTTPException(500, "Unexpected response shape from OpenAI") from e
+
+    if candidate.status == CandidateStatus.SHORTLISTED:
+        candidate.status = CandidateStatus.INTERVIEWING  # lock into the session
+        await db.commit()
+
+    return {
+        "token": token,
+        "model": settings.OPENAI_REALTIME_MODEL,
+        "candidate_id": str(candidate.id),
+    }
+
+
 async def start_session(candidate_id: UUID) -> dict:
     """Mint ephemeral token for browser WebRTC. Returns OpenAI's session payload."""
     payload = await mint_ephemeral_token(instructions=INTERVIEW_SYSTEM)
@@ -138,6 +212,46 @@ def format_code_block(p: CodeInjectionPayload) -> str:
     if p.note:
         header += f" note={p.note!r}"
     return f"{header}\n```{p.language}\n{p.code}\n```"
+
+
+async def submit_code(
+    db: AsyncSession,
+    candidate_id: UUID,
+    language: str,
+    code: str,
+    note: str | None = None,
+) -> CodeSubmission:
+    """Single-Write code submission. Persists the submission to Supabase ATOMICALLY
+    first (so Agent 5 always has the durable artifact), THEN best-effort forwards the
+    snapshot into the live OpenAI Realtime session so Agent 4 can speak about it.
+
+    A failed forward never loses the data — the DB row is already committed. A failed
+    persist raises before any forward, so the model never sees un-recorded code.
+    """
+    candidate = await db.get(Candidate, candidate_id)
+    if candidate is None:
+        raise HTTPException(status_code=404, detail="Candidate not found")
+    if candidate.status != CandidateStatus.INTERVIEWING:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Code can only be submitted during an active interview "
+            f"(status={candidate.status.value})",
+        )
+
+    # 1) Durable write first — one atomic INSERT.
+    submission = CodeSubmission(
+        candidate_id=candidate_id, language=language, code_text=code, note=note
+    )
+    db.add(submission)
+    await db.commit()
+    await db.refresh(submission)
+
+    # 2) Best-effort forward into the live model context (inject_code swallows its own
+    #    network errors; the durable record above is unaffected either way).
+    await inject_code(
+        CodeInjectionPayload(candidate_id=candidate_id, language=language, code=code, note=note)
+    )
+    return submission
 
 
 async def inject_code(payload: CodeInjectionPayload) -> None:

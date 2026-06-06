@@ -5,15 +5,16 @@ import { useAuth } from '../context/AuthContext';
 
 const Login = () => {
   const navigate = useNavigate();
-  const { login } = useAuth();
-  const [role, setRole] = useState('candidate');
+  const { signIn } = useAuth();
+  const [role, setRole] = useState('recruiter');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [submitting, setSubmitting] = useState(false);
 
-  const isValid_Role = (value) => ['candidate', 'recruiter', 'admin'].includes(value);
+  const isValid_Role = (value) => ['candidate', 'recruiter'].includes(value);
   const isValid_Email = (value) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 
-  const Handle_Login_Submit = (e) => {
+  const Handle_Login_Submit = async (e) => {
     e.preventDefault();
     if (!isValid_Role(role)) {
       alert('Error! Please select a valid role.');
@@ -30,27 +31,21 @@ const Login = () => {
       return;
     }
 
-    const stored_User = localStorage.getItem(`recruiterAI_user_${email.toLowerCase()}`);
-    if (!stored_User) {
-      alert('Wrong email or password.');
+    // Authenticate against Supabase Auth. On success the session (incl. the access
+    // token) is persisted by supabase-js and the Axios interceptor will start
+    // attaching it automatically to backend requests.
+    setSubmitting(true);
+    const { data, error } = await signIn(email, password);
+    setSubmitting(false);
+
+    if (error) {
+      alert(error.message || 'Wrong email or password.');
       return;
     }
 
-    const user = JSON.parse(stored_User);
-    if (user.password !== password) {
-      alert('Wrong email or password.');
-      return;
-    }
-
-    if (user.role !== role) {
-      alert('Selected role does not match your account. Please select the correct role.');
-      return;
-    }
-
-    login(role);
-    const path = role === 'recruiter' ? '/recruiter-dashboard' :
-      role === 'candidate' ? '/candidate-dashboard' : '/admin-dashboard';
-    navigate(path);
+    const resolvedRole = data?.user?.user_metadata?.role || role;
+    // Candidates land on their Zero-Click portal; everyone else on the recruiter app.
+    navigate(resolvedRole === 'candidate' ? '/candidate' : '/');
   };
 
   return (
@@ -83,13 +78,6 @@ const Login = () => {
                   onChange={(e) => setRole(e.target.value)} className="h-4 w-4 accent-blue-600" />
                 Recruiter
               </label>
-
-              <label className="inline-flex items-center gap-2 rounded-3xl border border-slate-300 bg-slate-50
-               px-4 py-3 text-sm font-medium text-slate-700 transition hover:border-blue-500">
-                <input type="checkbox" name="role" value="admin" checked={role === 'admin'}
-                  onChange={(e) => setRole(e.target.value)} className="h-4 w-4 accent-blue-600" />
-                Admin
-              </label>
             </div>
           </div>
           
@@ -113,8 +101,8 @@ const Login = () => {
               </div>
             </div>
 
-            <button className="w-50 lg:ml-30 ml-10 mt-4 rounded-3xl cursor-pointer bg-gradient-to-r from-blue-600 to-violet-600 py-3 text-white text-sm font-semibold shadow-lg transition hover:opacity-95">
-              Log In
+            <button type="submit" disabled={submitting} className="w-50 lg:ml-30 ml-10 mt-4 rounded-3xl cursor-pointer bg-gradient-to-r from-blue-600 to-violet-600 py-3 text-white text-sm font-semibold shadow-lg transition hover:opacity-95 disabled:opacity-60">
+              {submitting ? 'Logging in...' : 'Log In'}
             </button>
           </form>
         </div>

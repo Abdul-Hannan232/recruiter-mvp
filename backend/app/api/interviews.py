@@ -2,13 +2,15 @@
 from datetime import datetime, timezone
 from uuid import UUID
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents import evaluator, interviewer
 from app.database.session import get_session
 from app.models.db import Candidate, CandidateStatus, Interview
+from app.models.schemas import CodeSubmissionCreate, CodeSubmissionRead
 from app.services import state as state_svc
 
 router = APIRouter()
@@ -18,12 +20,37 @@ class CompleteIn(BaseModel):
     transcript: str = "Candidate answered well."
 
 
+@router.post("/{candidate_id}/code", response_model=CodeSubmissionRead, status_code=201)
+async def submit_code(
+    candidate_id: UUID,
+    body: CodeSubmissionCreate,
+    session: AsyncSession = Depends(get_session),
+) -> CodeSubmissionRead:
+    """Single-Write code submission (candidate clicks Submit). The backend persists the
+    submission to Supabase, then forwards it into the live OpenAI session for Agent 4.
+    Candidate-facing + unauthenticated (gated on INTERVIEWING status), like /complete."""
+    submission = await interviewer.submit_code(
+        session, candidate_id, body.language, body.code, body.note
+    )
+    return CodeSubmissionRead.model_validate(submission)
+
+
+@router.get("/webrtc-token")
+async def webrtc_token_by_room(
+    room_id: UUID, session: AsyncSession = Depends(get_session)
+) -> dict:
+    """Phase 4 entry point. Candidate-facing + unauthenticated — the room_id UUID
+    (minted in Phase 3, delivered in the outreach email) IS the unguessable secret.
+    Validates the candidate is SHORTLISTED, grounds the session in their resume + JD,
+    mints the ephemeral token, and locks them into INTERVIEWING."""
+    return await interviewer.generate_webrtc_token_by_room(room_id, session)
+
+
 @router.get("/{candidate_id}/webrtc-token")
 async def webrtc_token(
     candidate_id: UUID, session: AsyncSession = Depends(get_session)
 ) -> dict:
-    """Agent 4 ticket booth: mint an ephemeral WebRTC token and lock the candidate
-    into INTERVIEWING. Requires the candidate to be in OUTREACH_SENT."""
+    """Legacy candidate_id-keyed ticket booth (kept for back-compat)."""
     return await interviewer.generate_webrtc_token(candidate_id, session)
 
 
@@ -31,39 +58,41 @@ async def webrtc_token(
 async def complete(
     candidate_id: UUID,
     background: BackgroundTasks,
-    response: Response,
     body: CompleteIn | None = None,
-    wait: bool = False,
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Signalled by the frontend when the WebRTC call ends. Advances the candidate
-    from INTERVIEWING to INTERVIEW_COMPLETED, then hands off to Agent 5 (Evaluator).
+    """Signalled by the frontend when the WebRTC call ends. Persists the transcript,
+    moves the candidate to INTERVIEW_COMPLETED, then schedules Agent 5 to evaluate
+    SILENTLY in the background.
 
-    Default (wait=false): schedule the evaluation as a BackgroundTask and return 202.
-    wait=true: run the evaluation inline and return 200 with the real decision
-    (handy for tests / synchronous callers)."""
+    SECURITY: the candidate must never see the evaluation, so this returns ONLY a
+    generic success message — scores/recommendation are written to the DB for the
+    recruiter and are never part of this (or any candidate-facing) response."""
     c = await session.get(Candidate, candidate_id)
     if c is None:
         raise HTTPException(404, "Candidate not found")
     if c.status != CandidateStatus.INTERVIEWING:
         raise HTTPException(409, f"Cannot complete interview from status {c.status.value}")
-    c.status = CandidateStatus.INTERVIEW_COMPLETED
-    await session.commit()
 
     transcript = body.transcript if body else CompleteIn().transcript
 
-    # Agent 5 — the AI filter sets the next status (PENDING_RECRUITER or back to POOL).
-    if wait:
-        result = await evaluator.evaluate_interview(candidate_id, session, transcript)
-        return {"status": "evaluated", **result}
+    # Upsert the Interview row (the room flow never created one) and persist the raw
+    # transcript so Agent 5 can read it straight from the DB. Single commit.
+    iv = (
+        await session.execute(select(Interview).where(Interview.candidate_id == candidate_id))
+    ).scalar_one_or_none()
+    if iv is None:
+        iv = Interview(candidate_id=candidate_id, job_id=c.job_id)
+        session.add(iv)
+    iv.transcript_text = transcript
+    iv.is_completed = True
+    c.status = CandidateStatus.INTERVIEW_COMPLETED
+    await session.commit()
 
-    background.add_task(evaluator.evaluate_interview_bg, candidate_id, transcript)
-    response.status_code = 202
-    return {
-        "status": "queued",
-        "candidate_id": str(candidate_id),
-        "new_status": c.status.value,
-    }
+    # Decoupled from the candidate's request: Agent 5 runs AFTER this returns.
+    background.add_task(evaluator.evaluate_interview_bg, candidate_id)
+
+    return {"status": "success", "message": "Interview completed."}
 
 
 @router.post("/{candidate_id}/start", status_code=201)

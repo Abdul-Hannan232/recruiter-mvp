@@ -7,19 +7,28 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents import coordinator, matcher
 from app.agents._llm import embed
+from app.core.auth import Principal, require_recruiter
 from app.database.session import get_session
 from app.models.db import JobDescription
 from app.models.schemas import JobCreate, JobRead, MatchSummary
 
-router = APIRouter()
+# Every job operation (CRUD, matching, outreach) is a recruiter action, so the RBAC
+# gate is applied router-wide rather than per-route.
+router = APIRouter(dependencies=[Depends(require_recruiter)])
 
 
 @router.post("", response_model=JobRead, status_code=201)
-async def create_job(body: JobCreate, session: AsyncSession = Depends(get_session)) -> JobRead:
+async def create_job(
+    body: JobCreate,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_recruiter),
+) -> JobRead:
     # Embed the requirements text up front (768-d) so the batch matcher can run
-    # against this JD without any further LLM/embedding calls.
+    # against this JD without any further LLM/embedding calls. Stamp the owning
+    # recruiter so the job is scoped to this tenant.
     jd_vector = await embed(body.requirements_text)
     jd = JobDescription(
+        recruiter_id=principal.user_id,
         title=body.title,
         requirements_text=body.requirements_text,
         jd_embedding=jd_vector,
@@ -31,8 +40,16 @@ async def create_job(body: JobCreate, session: AsyncSession = Depends(get_sessio
 
 
 @router.get("", response_model=list[JobRead])
-async def list_jobs(session: AsyncSession = Depends(get_session)) -> list[JobRead]:
-    rows = (await session.execute(select(JobDescription))).scalars().all()
+async def list_jobs(
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_recruiter),
+) -> list[JobRead]:
+    # Tenant isolation: a recruiter only ever lists their own jobs.
+    rows = (
+        await session.execute(
+            select(JobDescription).where(JobDescription.recruiter_id == principal.user_id)
+        )
+    ).scalars().all()
     return [JobRead.model_validate(r) for r in rows]
 
 

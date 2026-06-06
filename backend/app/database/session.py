@@ -33,9 +33,45 @@ async def init_db() -> None:
     """Ensure pgvector + create tables on first boot."""
     from app.models.db import CandidateStatus  # noqa: F401  (register mappers)
 
+    # Create only our own (public-schema) tables. The auth.users stub in metadata
+    # exists solely to resolve cross-schema FKs and is owned by Supabase, so it must
+    # never be emitted by create_all.
+    owned_tables = [t for t in Base.metadata.sorted_tables if t.schema is None]
+
     async with engine.begin() as conn:
         await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
-        await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(Base.metadata.create_all, tables=owned_tables)
+
+        # create_all only CREATEs missing tables — it never ADDs columns to a table
+        # that already exists. New columns introduced after first boot are reconciled
+        # here, idempotently (ADD COLUMN IF NOT EXISTS). Keep in sync with db.Candidate.
+        await conn.execute(
+            text("ALTER TABLE candidates ADD COLUMN IF NOT EXISTS interview_room_id uuid")
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE candidates ADD COLUMN IF NOT EXISTS "
+                "score_penalty double precision NOT NULL DEFAULT 0"
+            )
+        )
+        await conn.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ix_candidates_interview_room_id "
+                "ON candidates (interview_room_id)"
+            )
+        )
+        await conn.execute(
+            text("ALTER TABLE candidates ADD COLUMN IF NOT EXISTS evaluation_summary text")
+        )
+        await conn.execute(
+            text("ALTER TABLE job_descriptions ADD COLUMN IF NOT EXISTS recruiter_id uuid")
+        )
+        await conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_job_descriptions_recruiter_id "
+                "ON job_descriptions (recruiter_id)"
+            )
+        )
 
     # create_all never ALTERs an existing enum type, so statuses added after the
     # type was first created must be appended explicitly. Idempotent + self-healing:

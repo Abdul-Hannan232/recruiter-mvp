@@ -10,13 +10,16 @@ the request cycle:
 """
 import json
 from io import BytesIO
+from uuid import UUID
 
 import fitz  # PyMuPDF
 from docx import Document
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents._llm import chat, embed
-from app.models.db import Candidate, CandidateStatus
+from app.core.config import settings
+from app.models.db import Candidate, CandidateStatus, UserRole
 
 
 class UnsupportedResume(ValueError):
@@ -55,7 +58,8 @@ async def extract_profile(text: str) -> dict[str, str]:
         [
             {"role": "system", "content": _EXTRACT_SYSTEM},
             {"role": "user", "content": text},
-        ]
+        ],
+        model=settings.DEEPSEEK_FLASH_MODEL,  # Agent 1: fast extraction
     )
     data = json.loads(raw)
     return {
@@ -64,8 +68,21 @@ async def extract_profile(text: str) -> dict[str, str]:
     }
 
 
-async def ingest(session: AsyncSession, filename: str, blob: bytes) -> Candidate:
-    """Full Agent-1 upload path → a persisted, embedded Candidate in the POOL."""
+async def ingest(
+    session: AsyncSession,
+    filename: str,
+    blob: bytes,
+    *,
+    user_id: UUID | None = None,
+    role: UserRole = UserRole.CANDIDATE,
+) -> Candidate:
+    """Full Agent-1 upload path → a persisted, embedded Candidate in the global POOL.
+
+    When ``user_id`` is supplied (candidate self-upload), the row is linked to the
+    Supabase identity and UPSERTED — a re-upload replaces that candidate's existing
+    pool record rather than creating a duplicate. job_id is always None (the candidate
+    is added job-agnostically; a recruiter's JD match assigns it later).
+    """
     text = extract_text(filename, blob)
     if not text:
         raise EmptyResume("Could not extract any text from the resume")
@@ -73,15 +90,24 @@ async def ingest(session: AsyncSession, filename: str, blob: bytes) -> Candidate
     profile = await extract_profile(text)
     vector = await embed(text)
 
-    candidate = Candidate(
-        job_id=None,  # Talent Pool: unassigned until a recruiter matches against a JD
-        full_name=profile["full_name"],
-        email=profile["email"],
-        original_resume_text=text,
-        resume_embedding=vector,
-        status=CandidateStatus.POOL,
-    )
-    session.add(candidate)
+    candidate: Candidate | None = None
+    if user_id is not None:
+        candidate = (
+            await session.execute(select(Candidate).where(Candidate.user_id == user_id))
+        ).scalar_one_or_none()
+
+    if candidate is None:
+        candidate = Candidate(user_id=user_id, role=role, status=CandidateStatus.POOL)
+        session.add(candidate)
+
+    # (Re)populate from the freshly parsed resume; reset to a clean pool state.
+    candidate.full_name = profile["full_name"]
+    candidate.email = profile["email"]
+    candidate.original_resume_text = text
+    candidate.resume_embedding = vector
+    candidate.job_id = None
+    candidate.status = CandidateStatus.POOL
+
     await session.commit()
     await session.refresh(candidate)
     return candidate
