@@ -3,13 +3,7 @@ import { useEffect, useRef, useState } from "react";
 
 const DEFAULT_SNIPPET = `// Solve the problem here.\nfunction solve(input) {\n  return input;\n}\n`;
 
-export default function CodeEditor({
-  language = "javascript",
-  onChange,
-  onSubmit,
-  canSubmit = false,
-  debounceMs = 800,
-}) {
+export default function CodeEditor({ language = "javascript", onChange, onSubmit, debounceMs = 800 }) {
   const [code, setCode] = useState(DEFAULT_SNIPPET);
   const [submitting, setSubmitting] = useState(false);
   const [submittedAt, setSubmittedAt] = useState(null);
@@ -24,11 +18,11 @@ export default function CodeEditor({
   }, [code, language, onChange, debounceMs]);
 
   async function handleSubmit() {
-    if (!onSubmit || submitting) return;
+    if (submitting) return;
     setSubmitting(true);
     try {
       // Explicit, durable Single-Write through the backend.
-      await onSubmit({ language, code });
+      await onSubmit?.({ language, code });
       setSubmittedAt(new Date());
     } catch (e) {
       console.error("code.submit failed", e);
@@ -39,25 +33,21 @@ export default function CodeEditor({
   }
 
   return (
-    <div className="h-full w-full flex flex-col border border-slate-800 rounded">
-      <div className="flex items-center justify-between px-3 py-2 border-b border-slate-800">
+    // Bounded height + overflow-hidden so the flex children (editor + footer) stay
+    // inside the box and the footer can't be pushed off-screen.
+    <div className="flex h-full w-full flex-col overflow-hidden rounded border border-slate-800">
+      {/* Header */}
+      <div className="flex items-center justify-between border-b border-slate-800 px-3 py-2">
         <span className="text-xs text-slate-400">{language}</span>
-        <div className="flex items-center gap-3">
-          {submittedAt && (
-            <span className="text-xs text-emerald-400">
-              Submitted {submittedAt.toLocaleTimeString()}
-            </span>
-          )}
-          <button
-            onClick={handleSubmit}
-            disabled={!canSubmit || submitting}
-            className="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 px-3 py-1 rounded text-xs"
-          >
-            {submitting ? "Submitting…" : "Submit code"}
-          </button>
-        </div>
+        {submittedAt && (
+          <span className="text-xs text-emerald-400">
+            Submitted {submittedAt.toLocaleTimeString()}
+          </span>
+        )}
       </div>
-      <div className="flex-1 min-h-0">
+
+      {/* Editor — the only scrollable region (flex-1 + min-h-0) */}
+      <div className="min-h-0 flex-1 overflow-y-auto">
         <Editor
           height="100%"
           defaultLanguage={language}
@@ -66,6 +56,18 @@ export default function CodeEditor({
           theme="vs-dark"
           options={{ fontSize: 13, minimap: { enabled: false } }}
         />
+      </div>
+
+      {/* Sticky footer pinned to the bottom of the code box. High z-index + solid bg
+          so the app navbar/footer can never cover the Submit button. Always visible. */}
+      <div className="sticky bottom-0 z-30 flex items-center justify-end gap-3 border-t border-slate-700 bg-slate-900 px-4 py-3">
+        <button
+          onClick={handleSubmit}
+          disabled={submitting}
+          className="rounded-lg bg-green-600 px-6 py-2.5 text-sm font-bold text-white shadow-lg transition hover:bg-green-500 disabled:opacity-60"
+        >
+          {submitting ? "Submitting…" : "Submit Code"}
+        </button>
       </div>
     </div>
   );

@@ -142,6 +142,10 @@ async def evaluate_interview(candidate_id: UUID, db: AsyncSession) -> dict:
     # --- Persist (recruiter-only) + route to HITL ---------------------------
     candidate.ai_evaluation_score = float(evaluation["technical_score"])
     candidate.evaluation_summary = json.dumps(evaluation)
+    # Snapshot the owning recruiter so the dashboard can still fetch this candidate
+    # even if the job is deleted later (which would NULL candidate.job_id).
+    if jd is not None and jd.recruiter_id is not None:
+        candidate.recruiter_id_snapshot = jd.recruiter_id
     candidate.status = CandidateStatus.PENDING_RECRUITER
     await db.commit()
 

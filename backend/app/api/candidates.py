@@ -1,11 +1,11 @@
 """Resume upload + candidate state inspection."""
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
-from sqlalchemy import select
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agents import vectorizer
+from app.agents import coordinator, vectorizer
 from app.agents.vectorizer import EmptyResume, UnsupportedResume
 from app.core.auth import (
     AuthIdentity,
@@ -24,6 +24,7 @@ router = APIRouter()
 
 @router.post("/me/resume", response_model=UploadResult, status_code=201)
 async def upload_my_resume(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     session: AsyncSession = Depends(get_session),
     identity: AuthIdentity = Depends(authenticated_principal),
@@ -42,6 +43,9 @@ async def upload_my_resume(
         raise HTTPException(415, str(e)) from e
     except EmptyResume as e:
         raise HTTPException(422, str(e)) from e
+
+    # Zero-Click: a freshly pooled candidate is autonomously matched against every job.
+    background_tasks.add_task(coordinator.run_full_pipeline_all_jobs_bg)
 
     return UploadResult(
         candidate_id=candidate.id,
@@ -94,13 +98,24 @@ async def list_graded(
     NOTE: declared BEFORE /{candidate_id} so the literal "graded" segment isn't
     captured by the UUID path param.
     """
+    # Prefer the durable recruiter snapshot (survives job deletion). Fall back to live
+    # job ownership only for legacy rows that predate the snapshot. No INNER JOIN, so a
+    # graded candidate whose job was deleted (job_id NULL) is no longer dropped.
+    owned_job_ids = select(JobDescription.id).where(
+        JobDescription.recruiter_id == principal.user_id
+    )
     rows = (
         await session.execute(
             select(Candidate)
-            .join(JobDescription, Candidate.job_id == JobDescription.id)
             .where(
                 Candidate.status == CandidateStatus.PENDING_RECRUITER,
-                JobDescription.recruiter_id == principal.user_id,
+                or_(
+                    Candidate.recruiter_id_snapshot == principal.user_id,
+                    and_(
+                        Candidate.recruiter_id_snapshot.is_(None),
+                        Candidate.job_id.in_(owned_job_ids),
+                    ),
+                ),
             )
             .order_by(Candidate.ai_evaluation_score.desc().nullslast())
         )

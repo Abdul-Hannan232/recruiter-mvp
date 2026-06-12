@@ -198,3 +198,27 @@ async def run_outreach_cycle_bg(job_id: UUID) -> None:
     already closed by the time this runs) and drives the outreach cycle."""
     async with SessionLocal() as session:
         await run_outreach_cycle(job_id, session)
+
+
+# --- Autonomous "Zero-Click" orchestration (Agent 2 -> Agent 3) ---------------
+
+async def run_full_pipeline_bg(job_id: UUID) -> None:
+    """Autonomous chain for one job: Agent 2 matches the pool, and IF anyone was newly
+    locked, Agent 3 immediately drafts + sends outreach and shortlists them. Opens its
+    own session (runs as a BackgroundTask after the request returns)."""
+    from app.agents import matcher  # local import keeps matcher<->coordinator decoupled
+
+    async with SessionLocal() as session:
+        summary = await matcher.run_matching_cycle(job_id, session)
+        if summary.get("matched_and_locked", 0) > 0:
+            await run_outreach_cycle(job_id, session)
+
+
+async def run_full_pipeline_all_jobs_bg() -> None:
+    """A new candidate just entered the global pool — autonomously try them against
+    every open job (each job's cycle locks + reaches out to any newly matched pool
+    candidate)."""
+    async with SessionLocal() as session:
+        job_ids = list((await session.execute(select(JobDescription.id))).scalars().all())
+    for jid in job_ids:
+        await run_full_pipeline_bg(jid)

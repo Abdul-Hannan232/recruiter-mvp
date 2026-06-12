@@ -1,4 +1,4 @@
-import { Route, Routes } from "react-router-dom";
+import { Route, Routes, useLocation } from "react-router-dom";
 import Navbar from "./components/Navbar.jsx";
 import Footer from "./components/Footer.jsx";
 import RecruiterDashboard from "./Pages/RecruiterDashboard.jsx";
@@ -9,12 +9,29 @@ import Login from "./Pages/Login.jsx";
 import Signup from "./Pages/Signup.jsx";
 import ProtectedRoute from "./components/ProtectedRoute.jsx";
 
+// Immersive, logo-only top bar for the live interview — no auth/nav distractions.
+// Keeps ~the same height as the full Navbar so the InterviewRoom layout is unchanged.
+function ImmersiveHeader() {
+  return (
+    <nav className="fixed top-0 left-0 z-50 flex w-full items-center bg-white px-6 py-4 shadow-md">
+      <p className="text-lg font-bold text-slate-900">
+        Recruiter <span className="text-blue-600">AI</span>
+      </p>
+    </nav>
+  );
+}
+
 // Recruiter side is gated behind Supabase Auth; the candidate interview link stays
-// public (frictionless — no candidate login, access is via the unique /interview/:id).
+// public (frictionless — no candidate login, access is via the unique /interview link).
 export default function App() {
+  // On the interview route, swap the full Navbar (auth buttons + nav links) for a
+  // stripped-down logo-only header so the live WebRTC call is distraction-free.
+  const { pathname } = useLocation();
+  const immersive = pathname.startsWith("/interview");
+
   return (
     <div className="min-h-screen flex flex-col bg-slate-100">
-      <Navbar />
+      {immersive ? <ImmersiveHeader /> : <Navbar />}
       <main className="flex-1">
         <Routes>
           <Route path="/login" element={<Login />} />

@@ -79,9 +79,14 @@ async def ingest(
     """Full Agent-1 upload path → a persisted, embedded Candidate in the global POOL.
 
     When ``user_id`` is supplied (candidate self-upload), the row is linked to the
-    Supabase identity and UPSERTED — a re-upload replaces that candidate's existing
-    pool record rather than creating a duplicate. job_id is always None (the candidate
-    is added job-agnostically; a recruiter's JD match assigns it later).
+    Supabase identity and UPSERTED — a re-upload refreshes that candidate's record
+    rather than creating a duplicate. job_id is None on first ingest (job-agnostic
+    pool); a recruiter's JD match assigns it later.
+
+    Funnel-state protection: if the existing candidate has already advanced past POOL
+    (SHORTLISTED / INTERVIEWING / PENDING_RECRUITER / etc.), a re-upload only refreshes
+    the resume text + embedding — it does NOT reset job_id or status, so an in-flight
+    candidate is never knocked out of the pipeline.
     """
     text = extract_text(filename, blob)
     if not text:
@@ -100,13 +105,16 @@ async def ingest(
         candidate = Candidate(user_id=user_id, role=role, status=CandidateStatus.POOL)
         session.add(candidate)
 
-    # (Re)populate from the freshly parsed resume; reset to a clean pool state.
+    # Always refresh the parsed resume content + embedding.
     candidate.full_name = profile["full_name"]
     candidate.email = profile["email"]
     candidate.original_resume_text = text
     candidate.resume_embedding = vector
-    candidate.job_id = None
-    candidate.status = CandidateStatus.POOL
+
+    # Only (re)set pool state when the candidate is brand-new or still in POOL. An
+    # in-flight candidate (past POOL) keeps their job_id and status untouched.
+    if candidate.status == CandidateStatus.POOL:
+        candidate.job_id = None
 
     await session.commit()
     await session.refresh(candidate)

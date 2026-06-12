@@ -41,12 +41,13 @@ class Settings(BaseSettings):
     GEMINI_API_KEY: str = ""
     GEMINI_EMBED_MODEL: str = "gemini-embedding-001"
 
-    # Pipeline gates. Calibrated for gemini-embedding-001's compressed cosine space
-    # (unrelated text sits ~0.5 distance; strong matches ~0.30). similarity = 1 - d/2.
+    # Pipeline gates. Calibrated for gemini-embedding-001 against REAL resumes/JDs,
+    # whose pairs sit ~0.41-0.50 (short JDs depress similarity). 0.45 admits genuine
+    # matches while rejecting unrelated pairs (~0.50). similarity = 1 - d/2.
     MATCH_THRESHOLD: float = 0.825
     # Agent 2 batch matcher: max pgvector cosine DISTANCE for a pool candidate to be
     # locked to a job. Lower = stricter. Distance is in [0, 2]; strictly < this passes.
-    MATCH_DISTANCE_THRESHOLD: float = 0.35
+    MATCH_DISTANCE_THRESHOLD: float = 0.45
     EMBED_DIM: int = 768  # Gemini gemini-embedding-001
 
     # Auth

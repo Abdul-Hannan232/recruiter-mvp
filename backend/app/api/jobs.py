@@ -20,6 +20,7 @@ router = APIRouter(dependencies=[Depends(require_recruiter)])
 @router.post("", response_model=JobRead, status_code=201)
 async def create_job(
     body: JobCreate,
+    background_tasks: BackgroundTasks,
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(require_recruiter),
 ) -> JobRead:
@@ -36,6 +37,9 @@ async def create_job(
     session.add(jd)
     await session.commit()
     await session.refresh(jd)
+
+    # Zero-Click: post a JD and the engine autonomously matches the pool + reaches out.
+    background_tasks.add_task(coordinator.run_full_pipeline_bg, jd.id)
     return JobRead.model_validate(jd)
 
 

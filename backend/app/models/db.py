@@ -138,6 +138,10 @@ class Candidate(Base):
     # Agent 5's full evaluation as a raw JSON string (recruiter-only; never shown to
     # the candidate). Holds scores, strengths/weaknesses, code_review, recommendation.
     evaluation_summary: Mapped[str | None] = mapped_column(Text)
+    # Snapshot of the owning recruiter, stamped by Agent 5 at grade time. Survives even
+    # if the original job is later deleted (which would NULL job_id), so the dashboard
+    # can always attribute & fetch a graded candidate to the right recruiter.
+    recruiter_id_snapshot: Mapped[UUID | None] = mapped_column(Uuid, nullable=True, index=True)
     status: Mapped[CandidateStatus] = mapped_column(
         Enum(CandidateStatus, name="candidate_status"),
         default=CandidateStatus.POOL,
@@ -164,7 +168,11 @@ class Interview(Base):
     candidate_id: Mapped[UUID] = mapped_column(
         ForeignKey("candidates.id", ondelete="CASCADE"), unique=True
     )
-    job_id: Mapped[UUID] = mapped_column(ForeignKey("job_descriptions.id", ondelete="CASCADE"))
+    # Nullable + SET NULL: a None job_id must not roll back /complete, and deleting a
+    # job must NOT destroy the interview transcript (previously CASCADE deleted it).
+    job_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("job_descriptions.id", ondelete="SET NULL"), nullable=True
+    )
     scheduled_time: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

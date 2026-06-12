@@ -106,12 +106,8 @@ export default function InterviewRoom() {
           over a separate WebSocket as textual context for the model.
         </p>
       </aside>
-      <section className="col-span-9">
-        <CodeEditor
-          onChange={handleCodeChange}
-          onSubmit={handleCodeSubmit}
-          canSubmit={status === "live" && Boolean(candidateId)}
-        />
+      <section className="col-span-9 h-full min-h-0">
+        <CodeEditor onChange={handleCodeChange} onSubmit={handleCodeSubmit} />
       </section>
     </div>
   );
