@@ -1,15 +1,15 @@
-import React from 'react'
-import Hero from '../components/Hero';
-import Features from '../components/Features';
-import Trust from '../components/Trust';
+import Hero from "../components/Hero";
+import Trust from "../components/Trust";
+import Features from "../components/Features";
 
 const Home = () => {
   return (
-    <div>
-        <Hero />
-        <Features />
-        <Trust />
+    <div className="bg-white">
+      <Hero />
+      <Trust />
+      <Features />
     </div>
-  )
-}
+  );
+};
+
 export default Home;

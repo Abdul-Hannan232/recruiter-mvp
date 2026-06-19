@@ -73,7 +73,7 @@ export default function RecruiterDashboard() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-100 px-4 pb-12 pt-24 sm:px-6 lg:px-8">
+    <div className="min-h-screen bg-slate-100 px-4 pb-12 pt-10 sm:px-6 lg:px-8">
       <div className="mx-auto max-w-7xl">
         {/* Hero */}
         <div className="mb-8 rounded-3xl bg-gradient-to-br from-slate-900 to-indigo-900 p-8 shadow-xl">

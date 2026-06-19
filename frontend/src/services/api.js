@@ -52,7 +52,4 @@ export const Interviews = {
   // Phase 4 room flow: resolves ?room=<UUID> -> { token, model, candidate_id }.
   getWebRtcTokenByRoom: (roomId) =>
     api.get(`/interviews/webrtc-token`, { params: { room_id: roomId } }).then((r) => r.data),
-  // Single-Write code submission: backend persists then forwards to the live model.
-  submitCode: (candidateId, payload) =>
-    api.post(`/interviews/${candidateId}/code`, payload).then((r) => r.data),
 };
