@@ -3,7 +3,9 @@
  * OpenAI's Realtime API using an ephemeral client_secret minted by FastAPI.
  *
  * The backend is NEVER in the audio path. The local microphone track and
- * remote model audio flow peer-to-peer with OpenAI.
+ * remote model audio flow peer-to-peer with OpenAI. The backend only mints the
+ * ephemeral token (resolving the room UUID -> candidate) and later receives the
+ * compiled transcript at /complete to trigger Agent 5.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Interviews } from "../services/api.js";
@@ -12,24 +14,33 @@ import { Interviews } from "../services/api.js";
 // is rejected with `beta_api_shape_disabled`; GA moved the call to /v1/realtime/calls.
 const OPENAI_REALTIME_CALLS_URL = "https://api.openai.com/v1/realtime/calls";
 
-export function useRealtime(candidateId) {
+export function useRealtime(roomId) {
   const [status, setStatus] = useState("idle"); // idle | connecting | live | error | closed
   const [error, setError] = useState(null);
+  // Resolved from the room token mint; needed for the /complete call at End time.
+  const [candidateId, setCandidateId] = useState(null);
   const pcRef = useRef(null);
   const remoteAudioRef = useRef(null); // bound to a physical <audio autoPlay> in InterviewRoom
   const dcRef = useRef(null);
+  // Ordered conversation log accumulated from data-channel transcript events.
+  // A ref (not state) so appends never trigger re-renders mid-interview.
+  const transcriptRef = useRef([]); // [{ role: "Interviewer" | "Candidate", text }]
 
   const connect = useCallback(async () => {
-    if (!candidateId) return;
+    if (!roomId) return;
     setStatus("connecting");
+    transcriptRef.current = []; // fresh log per session (handles reconnects)
     try {
-      const { token, model } = await Interviews.getWebRtcToken(candidateId);
+      // Room flow: resolve ?room=<UUID> -> { token, model, candidate_id }. This call
+      // also flips the candidate SHORTLISTED -> INTERVIEWING server-side.
+      const { token, model, candidate_id } = await Interviews.getWebRtcTokenByRoom(roomId);
+      setCandidateId(candidate_id);
 
-	const pc = new RTCPeerConnection({
-	  iceServers: [
-	    { urls: "stun:stun.l.google.com:19302" } // Free Google STUN server to fix ICE failures
-	  ]
-	});
+      const pc = new RTCPeerConnection({
+        iceServers: [
+          { urls: "stun:stun.l.google.com:19302" }, // Free Google STUN to fix ICE failures
+        ],
+      });
       pcRef.current = pc;
 
       // Remote model audio -> attach to the on-screen <audio> element. Using a
@@ -40,8 +51,6 @@ export function useRealtime(candidateId) {
         const el = remoteAudioRef.current;
         if (!el) return;
         el.srcObject = e.streams[0];
-        // Explicitly start playback and surface any autoplay block instead of
-        // failing silently.
         el.play().catch(console.error);
       };
 
@@ -53,47 +62,58 @@ export function useRealtime(candidateId) {
       const dc = pc.createDataChannel("oai-events");
       dcRef.current = dc;
 
-      // Visibility: log everything OpenAI sends back over the channel
-      // (response lifecycle, response.audio_transcript.delta, tool calls, etc.).
+      // Accumulate the transcript from the Realtime stream:
+      //  - response.audio_transcript.done                         -> interviewer (model) speech
+      //  - conversation.item.input_audio_transcription.completed  -> candidate (mic) speech
+      // We capture the FINAL events (not deltas) so each utterance is logged once, in
+      // arrival order, which is good enough for Agent 5's transcript-based grading.
       dc.onmessage = (e) => {
+        let event;
         try {
-          const event = JSON.parse(e.data);
-          console.log("oai-event", event.type, event);
+          event = JSON.parse(e.data);
         } catch (err) {
           console.error("oai-event parse failed", err, e.data);
+          return;
+        }
+        console.log("oai-event", event.type, event);
+        if (event.type === "response.audio_transcript.done" && event.transcript) {
+          transcriptRef.current.push({ role: "Interviewer", text: event.transcript });
+        } else if (
+          event.type === "conversation.item.input_audio_transcription.completed" &&
+          event.transcript
+        ) {
+          transcriptRef.current.push({ role: "Candidate", text: event.transcript });
         }
       };
 
-      // Break the silence: as soon as the channel is open, ask the model to
-      // respond so it greets the candidate first instead of waiting for speech.
-      // Request both modalities explicitly so we always get spoken audio.
+      // Break the silence: as soon as the channel is open, ask the model to respond so
+      // it greets the candidate first instead of waiting for speech.
       dc.onopen = () => {
-  	console.log("Data channel opened! Triggering agent greeting...");
-  
-	  // 1. Send a hidden text message to set the context
-	  const initEvent = {
-	    type: "conversation.item.create",
-	    item: {
-	      type: "message",
-	      role: "user",
-	      content: [{ 
-		type: "input_text", 
-		text: "Hello! The interview has started. Please introduce yourself and ask me the first technical question." 
-	      }]
-	    }
-	  };
-	  dc.send(JSON.stringify(initEvent));
-	  
-	  // 2. Instruct the AI to generate a vocal response to the text we just sent
-	  dc.send(JSON.stringify({ type: "response.create" }));
-	};
+        console.log("Data channel opened! Triggering agent greeting...");
+        dc.send(
+          JSON.stringify({
+            type: "conversation.item.create",
+            item: {
+              type: "message",
+              role: "user",
+              content: [
+                {
+                  type: "input_text",
+                  text: "Hello! The interview has started. Please introduce yourself and ask me the first technical question.",
+                },
+              ],
+            },
+          }),
+        );
+        dc.send(JSON.stringify({ type: "response.create" }));
+      };
 
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
 
-      // GA SDP exchange. The ephemeral key carries the session, and ?model lets
-      // the /calls endpoint resolve the model explicitly — together they avoid the
-      // 404 you get when the model can't be resolved.
+      // GA SDP exchange. The ephemeral key carries the session, and ?model lets the
+      // /calls endpoint resolve the model explicitly — together they avoid the 404 you
+      // get when the model can't be resolved.
       const resp = await fetch(
         `${OPENAI_REALTIME_CALLS_URL}?model=${encodeURIComponent(model)}`,
         {
@@ -106,8 +126,8 @@ export function useRealtime(candidateId) {
         },
       );
       if (!resp.ok) {
-        // Surface OpenAI's reason instead of a bare status — this is where the
-        // real 404 cause ("model_not_found", etc.) lives.
+        // Surface OpenAI's reason instead of a bare status — this is where the real
+        // 404 cause ("model_not_found", etc.) lives.
         const detail = await resp.text().catch(() => "");
         throw new Error(`Realtime SDP exchange failed: ${resp.status} ${detail}`);
       }
@@ -120,7 +140,7 @@ export function useRealtime(candidateId) {
       setError(e);
       setStatus("error");
     }
-  }, [candidateId]);
+  }, [roomId]);
 
   const disconnect = useCallback(() => {
     pcRef.current?.getSenders().forEach((s) => s.track?.stop());
@@ -129,7 +149,61 @@ export function useRealtime(candidateId) {
     setStatus("closed");
   }, []);
 
+  // Phase 3: push the Monaco editor's code DIRECTLY into the live OpenAI Realtime
+  // session over the WebRTC data channel (no backend hop), then trigger a spoken
+  // response so the interviewer immediately interrogates what was just submitted.
+  // Returns false (without sending) if the session isn't live yet, so the caller can
+  // surface that to the candidate instead of silently dropping the submit.
+  const sendCodeToAI = useCallback((codeString) => {
+    const dc = dcRef.current;
+    if (!dc || dc.readyState !== "open") {
+      console.warn("sendCodeToAI: data channel not open — start the interview first");
+      return false;
+    }
+
+    // Built with string concatenation (not a template literal) so the markdown ```
+    // fences around the code don't collide with JS backtick delimiters.
+    const text =
+      "The candidate has submitted the following code in the editor:\n\n" +
+      "```\n" +
+      (codeString ?? "") +
+      "\n```\n" +
+      "Do not write new code. Immediately ask brief, technical follow-up questions " +
+      "interrogating their logic, time complexity, or design choices.";
+
+    // 1) conversation.item.create — inject the code as a system message (input_text).
+    dc.send(
+      JSON.stringify({
+        type: "conversation.item.create",
+        item: {
+          type: "message",
+          role: "system",
+          content: [{ type: "input_text", text }],
+        },
+      }),
+    );
+    // 2) response.create — make the model actually speak its interrogation aloud.
+    dc.send(JSON.stringify({ type: "response.create" }));
+    return true;
+  }, []);
+
+  // Compile the accumulated conversation into a single formatted string for Agent 5.
+  const getTranscript = useCallback(
+    () => transcriptRef.current.map(({ role, text }) => `${role}: ${text}`).join("\n"),
+    [],
+  );
+
   useEffect(() => () => disconnect(), [disconnect]);
 
-  return { status, error, connect, disconnect, dataChannel: dcRef, remoteAudioRef };
+  return {
+    status,
+    error,
+    candidateId,
+    connect,
+    disconnect,
+    sendCodeToAI,
+    getTranscript,
+    dataChannel: dcRef,
+    remoteAudioRef,
+  };
 }

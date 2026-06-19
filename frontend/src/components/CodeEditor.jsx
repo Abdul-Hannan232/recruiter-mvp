@@ -60,13 +60,13 @@ export default function CodeEditor({ language = "javascript", onChange, onSubmit
 
       {/* Sticky footer pinned to the bottom of the code box. High z-index + solid bg
           so the app navbar/footer can never cover the Submit button. Always visible. */}
-      <div className="sticky bottom-0 z-30 flex items-center justify-end gap-3 border-t border-slate-700 bg-slate-900 px-4 py-3">
+      <div className="sticky bottom-0 z-30 border-t border-slate-700 bg-slate-900 px-4 py-3">
         <button
           onClick={handleSubmit}
           disabled={submitting}
-          className="rounded-lg bg-green-600 px-6 py-2.5 text-sm font-bold text-white shadow-lg transition hover:bg-green-500 disabled:opacity-60"
+          className="w-full rounded-lg bg-emerald-600 px-6 py-3 text-sm font-bold text-white shadow-lg shadow-emerald-600/20 transition hover:bg-emerald-500 disabled:opacity-60"
         >
-          {submitting ? "Submitting…" : "Submit Code"}
+          {submitting ? "Submitting…" : "Submit Code for AI Review"}
         </button>
       </div>
     </div>

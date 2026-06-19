@@ -26,12 +26,6 @@ export const Jobs = {
 };
 
 export const Candidates = {
-  upload: (form) =>
-    api
-      .post("/candidates/upload", form, {
-        headers: { "Content-Type": "multipart/form-data" },
-      })
-      .then((r) => r.data),
   get: (id) => api.get(`/candidates/${id}`).then((r) => r.data),
   byJob: (jobId) => api.get(`/candidates/by-job/${jobId}`).then((r) => r.data),
   // Recruiter review queue: only Agent-5-graded candidates, scoped to this recruiter.
@@ -46,7 +40,6 @@ export const Candidates = {
   // HITL recruiter overrides — each returns the updated candidate record.
   hire: (id) => api.post(`/candidates/${id}/hire`).then((r) => r.data),
   reject: (id) => api.post(`/candidates/${id}/reject`).then((r) => r.data),
-  uncalled: (id) => api.post(`/candidates/${id}/uncalled`).then((r) => r.data),
 };
 
 export const Interviews = {
