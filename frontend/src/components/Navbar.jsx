@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link, NavLink, useNavigate } from "react-router-dom";
-import { FaUser, FaBars, FaTimes } from "react-icons/fa";
+import { FaBars, FaTimes } from "react-icons/fa";
 import { useAuth } from "../context/AuthContext";
 
 const Navbar = () => {
@@ -45,9 +45,6 @@ const Navbar = () => {
       <nav className="sticky top-0 z-50 flex w-full items-center justify-between border-b border-slate-200 bg-white/95 px-6 py-3 backdrop-blur">
         {/* Brand */}
         <Link to="/" className="flex items-center gap-3">
-          <span className="grid h-9 w-9 place-items-center rounded-xl bg-indigo-600 text-white">
-            <FaUser />
-          </span>
           <div className="leading-tight">
             <p className="text-base font-bold text-slate-900">
               Recruiter <span className="text-indigo-600">AI</span>
