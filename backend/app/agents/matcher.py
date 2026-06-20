@@ -25,8 +25,16 @@ async def _ensure_jd_embedding(session: AsyncSession, jd: JobDescription) -> lis
     return vec
 
 
-async def run(session: AsyncSession, candidate_id: UUID) -> float:
-    """Returns cosine similarity in [0, 1]."""
+async def run(
+    session: AsyncSession, candidate_id: UUID, target_city: str | None = None
+) -> float:
+    """Returns cosine similarity in [0, 1].
+
+    LOCATION-AWARE (Phase 13): mirrors run_matching_cycle's hard geo gate. ``target_city``
+    defaults to the job's ``city``; when it is a concrete (non-"remote") city and the
+    candidate isn't in it, the candidate FAILS the gate and is scored 0.0 — exactly as
+    the SQL ILIKE filter would exclude them from the batch shortlist.
+    """
     candidate = await session.get(Candidate, candidate_id)
     if candidate is None or candidate.resume_embedding is None:
         raise ValueError("Candidate or candidate embedding missing")
@@ -35,6 +43,16 @@ async def run(session: AsyncSession, candidate_id: UUID) -> float:
         select(JobDescription).where(JobDescription.id == candidate.job_id)
     )).scalar_one()
     await _ensure_jd_embedding(session, jd)
+
+    # Hard location gate, consistent with the batch matcher.
+    if target_city is None:
+        target_city = jd.city
+    if target_city and target_city.strip().lower() != "remote":
+        cand_city = (candidate.city or "").strip().lower()
+        if cand_city != target_city.strip().lower():
+            candidate.ai_evaluation_score = 0.0
+            await session.commit()
+            return 0.0
 
     # pgvector cosine distance d in [0, 2]; similarity = 1 - d/2 in [0, 1].
     stmt = select(
@@ -49,7 +67,7 @@ async def run(session: AsyncSession, candidate_id: UUID) -> float:
 
 
 async def run_matching_cycle(
-    job_id: UUID, db: AsyncSession, top_k: int = 50
+    job_id: UUID, db: AsyncSession, top_k: int = 50, target_city: str | None = None
 ) -> dict[str, int]:
     """Batch Talent-Pool matcher (the "Top-K Math Gate"). ZERO generative LLM calls.
 
@@ -59,26 +77,41 @@ async def run_matching_cycle(
     job_id set). Candidates at or above the threshold are left untouched in the POOL
     (job_id stays None) so a future JD can claim them.
 
+    LOCATION-AWARE (Phase 12): ``target_city`` defaults to the job's ``city``. When set
+    to a concrete (non-"remote") city, a HARD metadata filter is applied as a SQL WHERE
+    clause so the pool is restricted to that city BEFORE the cosine ORDER BY + LIMIT —
+    i.e. geography gates the shortlist prior to vector ranking, never after. "remote"
+    (case-insensitive) or an absent city disables the filter (global search).
+
     NOTE: `db` is an AsyncSession (the whole app is async); param name/order mirror
     the agreed `run_matching_cycle(job_id, db, top_k)` contract.
     """
     jd = await db.get(JobDescription, job_id)
     if jd is None:
         raise ValueError(f"Job {job_id} not found")
+    if not jd.is_active:
+        # Zombie-job safety net: a closed role never sources new candidates.
+        return {"total_evaluated": 0, "matched_and_locked": 0}
     if jd.jd_embedding is None:
         raise ValueError(f"Job {job_id} has no embedding; cannot match")
+
+    # Default the geo target to the job's own city unless the caller overrides it.
+    if target_city is None:
+        target_city = jd.city
+    apply_city = bool(target_city and target_city.strip().lower() != "remote")
 
     # pgvector cosine distance, computed in SQL. We add the persistent score_penalty
     # (set on recruiter REJECT) so previously-rejected candidates rank lower and fall
     # below the gate — the 768-d embedding itself is never mutated. effective = d + p.
     distance = Candidate.resume_embedding.cosine_distance(jd.jd_embedding)
     effective = (distance + Candidate.score_penalty).label("effective_distance")
-    stmt = (
-        select(Candidate, effective)
-        .where(Candidate.status == CandidateStatus.POOL)
-        .order_by(effective)  # ascending: closest (most similar, least penalised) first
-        .limit(top_k)
-    )
+    stmt = select(Candidate, effective).where(Candidate.status == CandidateStatus.POOL)
+    if apply_city:
+        # HARD pre-vector location gate: case-insensitive exact city match. Candidates
+        # with a NULL city (pre-Phase-11) are intentionally excluded from a city-scoped
+        # search. ILIKE without wildcards == whole-string case-insensitive equality.
+        stmt = stmt.where(Candidate.city.ilike(target_city.strip()))
+    stmt = stmt.order_by(effective).limit(top_k)  # closest (least penalised) first
     rows = (await db.execute(stmt)).all()
 
     matched = 0

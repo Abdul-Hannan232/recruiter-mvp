@@ -18,18 +18,17 @@ const Navbar = () => {
   const links = !isAuthenticated
     ? [
         { to: "/", label: "Home" },
-        { to: "/jobs", label: "Jobs" },
       ]
     : userRole === "candidate"
       ? [
           { to: "/", label: "Home" },
           { to: "/candidate", label: "Portal" },
-          { to: "/jobs", label: "Jobs" },
+          { to: "/profile", label: "Profile" },
         ]
       : [
           { to: "/", label: "Home" },
           { to: "/dashboard", label: "Dashboard" },
-          { to: "/jobs", label: "Jobs" },
+          { to: "/settings", label: "Settings" },
         ];
 
   const linkClass = ({ isActive }) =>

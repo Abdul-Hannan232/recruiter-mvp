@@ -63,6 +63,19 @@ async def init_db() -> None:
         await conn.execute(
             text("ALTER TABLE candidates ADD COLUMN IF NOT EXISTS evaluation_summary text")
         )
+        # Phase 11: location tracking. Nullable so existing rows aren't violated.
+        await conn.execute(
+            text("ALTER TABLE candidates ADD COLUMN IF NOT EXISTS city varchar(100)")
+        )
+        await conn.execute(
+            text("ALTER TABLE job_descriptions ADD COLUMN IF NOT EXISTS city varchar(100)")
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE job_descriptions ADD COLUMN IF NOT EXISTS "
+                "is_active boolean NOT NULL DEFAULT true"
+            )
+        )
         await conn.execute(
             text("ALTER TABLE job_descriptions ADD COLUMN IF NOT EXISTS recruiter_id uuid")
         )

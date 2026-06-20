@@ -2,14 +2,14 @@
 from uuid import UUID
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents import coordinator, matcher
 from app.agents._llm import embed
 from app.core.auth import Principal, require_recruiter
 from app.database.session import get_session
-from app.models.db import JobDescription
+from app.models.db import Candidate, CandidateStatus, JobDescription
 from app.models.schemas import JobCreate, JobRead, MatchSummary
 
 # Every job operation (CRUD, matching, outreach) is a recruiter action, so the RBAC
@@ -32,6 +32,7 @@ async def create_job(
         recruiter_id=principal.user_id,
         title=body.title,
         requirements_text=body.requirements_text,
+        city=body.city,
         jd_embedding=jd_vector,
     )
     session.add(jd)
@@ -104,3 +105,77 @@ async def outreach_job(
 
     background_tasks.add_task(coordinator.run_outreach_cycle_bg, job_id)
     return {"status": "accepted", "job_id": str(job_id)}
+
+
+# In-flight candidate statuses reset to POOL when a role is closed.
+_IN_FLIGHT = [
+    CandidateStatus.MATCHED,
+    CandidateStatus.SHORTLISTED,
+    CandidateStatus.INTERVIEWING,
+    CandidateStatus.PENDING_RECRUITER,
+    CandidateStatus.FINAL_INTERVIEW_SCHEDULED,
+]
+
+
+@router.post("/{job_id}/close", response_model=JobRead)
+async def close_job(
+    job_id: UUID,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_recruiter),
+) -> JobRead:
+    """Close a role: deactivate it and release every in-flight candidate back to the POOL.
+
+    Tenant-isolated — only the owning recruiter may close their job. The bulk reset moves
+    MATCHED / SHORTLISTED / INTERVIEWING / PENDING_RECRUITER / FINAL_INTERVIEW_SCHEDULED
+    candidates back to POOL and unlocks them (job_id + interview_room_id cleared) so they
+    are free for future matching. HIRED / REJECTED (terminal) candidates are untouched.
+    """
+    jd = await session.get(JobDescription, job_id)
+    if jd is None or jd.recruiter_id != principal.user_id:
+        # 404 (not 403) so we never leak the existence of another tenant's job.
+        raise HTTPException(404, "Job not found")
+
+    await session.execute(
+        update(Candidate)
+        .where(Candidate.job_id == job_id, Candidate.status.in_(_IN_FLIGHT))
+        .values(status=CandidateStatus.POOL, job_id=None, interview_room_id=None)
+    )
+    jd.is_active = False
+    await session.commit()
+    await session.refresh(jd)
+    return JobRead.model_validate(jd)
+
+
+@router.delete("/{job_id}", status_code=204)
+async def delete_job(
+    job_id: UUID,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_recruiter),
+) -> Response:
+    """Hard-delete a SINGLE job, strictly scoped to its id AND the owning recruiter.
+
+    The scoped fetch (id == job_id AND recruiter_id == caller) guarantees one tenant can
+    never delete another's role, and that exactly one job is removed. In-flight candidates
+    are released to the POOL (status reset, job_id + interview_room_id cleared) before the
+    delete; any remaining references (e.g. terminal candidates, interview transcripts) are
+    SET NULL by the FK on delete, so history survives.
+    """
+    jd = (
+        await session.execute(
+            select(JobDescription).where(
+                JobDescription.id == job_id,
+                JobDescription.recruiter_id == principal.user_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if jd is None:
+        raise HTTPException(404, "Job not found")
+
+    await session.execute(
+        update(Candidate)
+        .where(Candidate.job_id == job_id, Candidate.status.in_(_IN_FLIGHT))
+        .values(status=CandidateStatus.POOL, job_id=None, interview_room_id=None)
+    )
+    await session.delete(jd)
+    await session.commit()
+    return Response(status_code=204)

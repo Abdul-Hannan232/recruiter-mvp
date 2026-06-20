@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { FaUser, FaEnvelope, FaLock } from 'react-icons/fa';
+import { FaUser, FaEnvelope, FaLock, FaMapMarkerAlt } from 'react-icons/fa';
 import { useAuth } from '../context/AuthContext';
 
 const Signup = () => {
@@ -8,6 +8,7 @@ const Signup = () => {
   const { signUp } = useAuth();
   const [role, setRole] = useState('recruiter');
   const [fullName, setFullName] = useState('');
+  const [city, setCity] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, set_Confirm_Password] = useState('');
@@ -25,6 +26,11 @@ const Signup = () => {
 
     if (!fullName.trim()) {
       alert('Error! Please enter your full name.');
+      return;
+    }
+
+    if (!city.trim()) {
+      alert('Error! Please enter your city.');
       return;
     }
 
@@ -55,6 +61,7 @@ const Signup = () => {
     const { data, error } = await signUp(email.toLowerCase(), password, {
       role,
       full_name: fullName.trim(),
+      city: city.trim(),
     });
     setSubmitting(false);
 
@@ -113,6 +120,14 @@ const Signup = () => {
               <div className="flex items-center gap-3 rounded-3xl border border-slate-300 bg-slate-50 px-4 py-3 focus-within:border-blue-500">
                 <FaUser className="text-blue-600" />
                 <input type="text" placeholder="Enter your full name" className="w-full bg-transparent text-slate-900 outline-none" required value={fullName} onChange={(e) => setFullName(e.target.value)} />
+              </div>
+            </div>
+
+            <div>
+              <label className="mb-2 block text-sm font-semibold text-slate-700"> City </label>
+              <div className="flex items-center gap-3 rounded-3xl border border-slate-300 bg-slate-50 px-4 py-3 focus-within:border-blue-500">
+                <FaMapMarkerAlt className="text-blue-600" />
+                <input type="text" placeholder="Enter your city" className="w-full bg-transparent text-slate-900 outline-none" required value={city} onChange={(e) => setCity(e.target.value)} />
               </div>
             </div>
 

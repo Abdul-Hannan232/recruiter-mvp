@@ -10,7 +10,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.agents import evaluator, interviewer
 from app.database.session import get_session
 from app.models.db import Candidate, CandidateStatus, Interview
-from app.models.schemas import CodeSubmissionCreate, CodeSubmissionRead
 from app.services import state as state_svc
 
 router = APIRouter()
@@ -18,21 +17,6 @@ router = APIRouter()
 
 class CompleteIn(BaseModel):
     transcript: str = "Candidate answered well."
-
-
-@router.post("/{candidate_id}/code", response_model=CodeSubmissionRead, status_code=201)
-async def submit_code(
-    candidate_id: UUID,
-    body: CodeSubmissionCreate,
-    session: AsyncSession = Depends(get_session),
-) -> CodeSubmissionRead:
-    """Single-Write code submission (candidate clicks Submit). The backend persists the
-    submission to Supabase, then forwards it into the live OpenAI session for Agent 4.
-    Candidate-facing + unauthenticated (gated on INTERVIEWING status), like /complete."""
-    submission = await interviewer.submit_code(
-        session, candidate_id, body.language, body.code, body.note
-    )
-    return CodeSubmissionRead.model_validate(submission)
 
 
 @router.get("/webrtc-token")

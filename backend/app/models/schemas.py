@@ -10,6 +10,7 @@ from app.models.db import CandidateStatus, UserRole
 class JobCreate(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     requirements_text: str = Field(min_length=20)
+    city: str = Field(min_length=1, max_length=100)
 
 
 class JobRead(BaseModel):
@@ -17,6 +18,8 @@ class JobRead(BaseModel):
     id: UUID
     title: str
     requirements_text: str
+    city: str | None
+    is_active: bool
     created_at: datetime
 
 
@@ -46,6 +49,21 @@ class CandidateUpdate(BaseModel):
     ai_evaluation_score: float | None = None
 
 
+class ScheduleInterviewIn(BaseModel):
+    """Recruiter HITL: book the final human interview for an AI-vetted candidate."""
+
+    scheduled_time: datetime
+    meeting_link: str | None = Field(default=None, max_length=500)
+
+
+class CandidateProfileUpdate(BaseModel):
+    """Candidate self-service profile edit. Keeps the DB row in sync with the auth-layer
+    metadata so Agent 2's geo-gate never drifts from the JWT. Both fields optional."""
+
+    full_name: str | None = Field(default=None, min_length=1, max_length=200)
+    city: str | None = Field(default=None, min_length=1, max_length=100)
+
+
 class CandidateRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: UUID
@@ -54,6 +72,7 @@ class CandidateRead(BaseModel):
     job_id: UUID | None
     full_name: str
     email: EmailStr
+    city: str | None
     ai_evaluation_score: float | None
     evaluation_summary: str | None
     score_penalty: float
@@ -80,35 +99,7 @@ class EphemeralTokenResponse(BaseModel):
     model: str
 
 
-class CodeInjectionPayload(BaseModel):
-    """Sent from React over WS during the live interview."""
-
-    candidate_id: UUID
-    language: str
-    code: str
-    cursor_line: int | None = None
-    note: str | None = None
-
-
 class EvaluationResult(BaseModel):
     candidate_id: UUID
     final_score: float
     rubric: dict
-
-
-class CodeSubmissionCreate(BaseModel):
-    """Explicit code submission from the interview room (candidate clicks Submit)."""
-
-    language: str = Field(min_length=1, max_length=50)
-    code: str = Field(min_length=1)
-    note: str | None = Field(default=None, max_length=200)
-
-
-class CodeSubmissionRead(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-    id: UUID
-    candidate_id: UUID
-    language: str
-    code_text: str
-    note: str | None
-    created_at: datetime

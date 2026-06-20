@@ -43,6 +43,8 @@ class CandidateStatus(str, PyEnum):
     INTERVIEW_COMPLETED = "interview_completed"
     # Stage-1 AI filter passed; queued for the human recruiter (stage-2 interview).
     PENDING_RECRUITER = "pending_recruiter"
+    # HITL: recruiter has scheduled the final human interview (email invite sent).
+    FINAL_INTERVIEW_SCHEDULED = "final_interview_scheduled"
     HIRED = "hired"
     REJECTED = "rejected"
 
@@ -103,7 +105,16 @@ class JobDescription(Base):
     )
     title: Mapped[str] = mapped_column(String(200))
     requirements_text: Mapped[str] = mapped_column(Text)
+    # Required location for the role (recruiter-specified at JD creation). Nullable at
+    # the DB level so adding the column to an existing table never breaks; JobCreate
+    # enforces it as required at the API boundary.
+    city: Mapped[str | None] = mapped_column(String(100), nullable=True)
     jd_embedding: Mapped[list[float] | None] = mapped_column(Vector(settings.EMBED_DIM))
+    # Lifecycle flag. False = closed: no new matching/outreach, and existing in-flight
+    # candidates are bulk-reset back to the POOL when the recruiter closes the role.
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default="true", nullable=False
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     candidates: Mapped[list["Candidate"]] = relationship(back_populates="job")
@@ -132,6 +143,10 @@ class Candidate(Base):
     )
     full_name: Mapped[str] = mapped_column(String(200))
     email: Mapped[str] = mapped_column(String(200), index=True)
+    # Candidate's city, bound from their verified Supabase Auth user_metadata at intake.
+    # Nullable so the row write never fails if the metadata is absent (Supabase owns the
+    # initial signup write); location-based matching reads it when present.
+    city: Mapped[str | None] = mapped_column(String(100), nullable=True)
     original_resume_text: Mapped[str] = mapped_column(Text)
     resume_embedding: Mapped[list[float] | None] = mapped_column(Vector(settings.EMBED_DIM))
     ai_evaluation_score: Mapped[float | None] = mapped_column(Float)
@@ -180,24 +195,3 @@ class Interview(Base):
     is_completed: Mapped[bool] = mapped_column(Boolean, default=False)
 
     candidate: Mapped[Candidate] = relationship(back_populates="interview")
-
-
-class CodeSubmission(Base):
-    """Durable, append-only record of code a candidate submits during the live
-    interview (Single-Write pattern). Persisted by the backend BEFORE the snapshot is
-    forwarded to the OpenAI session, so Agent 5 always has the real artifact to grade.
-
-    Keyed by candidate_id (the reliable identifier in the room flow; the legacy
-    Interview row isn't created by the room path). Each submit is one atomic INSERT.
-    """
-
-    __tablename__ = "code_submissions"
-
-    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
-    candidate_id: Mapped[UUID] = mapped_column(
-        ForeignKey("candidates.id", ondelete="CASCADE"), index=True
-    )
-    language: Mapped[str] = mapped_column(String(50))
-    code_text: Mapped[str] = mapped_column(Text)
-    note: Mapped[str | None] = mapped_column(String(200))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

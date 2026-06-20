@@ -56,3 +56,62 @@ async def send_email(to: str, subject: str, html_body: str) -> dict:
     )
     log.info("EMAIL sent live to %s (subject=%r)", to, subject)
     return {"sent": True, "mode": "smtp", "to": to, "subject": subject}
+
+
+async def send_final_interview_email(
+    *,
+    to: str,
+    cc: str | None,
+    job_title: str,
+    scheduled_time,
+    meeting_link: str | None = None,
+) -> dict:
+    """Final human-interview invite. Emails the CANDIDATE and CC's the RECRUITER on the
+    same thread, so neither party's address is exposed until this invite is sent. Plain
+    text by design — the candidate replies in-thread to confirm/propose a time. Dual-mode
+    (live aiosmtplib / render-only log), mirroring send_email."""
+    when = (
+        scheduled_time.strftime("%A, %d %B %Y at %H:%M")
+        if hasattr(scheduled_time, "strftime")
+        else str(scheduled_time)
+    )
+    link_line = f"\n\nMeeting link: {meeting_link}" if meeting_link else ""
+    body_text = (
+        f"Congratulations, you have been selected for a final interview for the role of "
+        f"{job_title}. The recruiter has proposed {when}. Please reply directly to this "
+        f"email thread to confirm your availability or propose an alternative time."
+        f"{link_line}"
+    )
+
+    msg = EmailMessage()
+    msg["From"] = settings.SMTP_FROM or settings.SMTP_USER or "no-reply@recruiter.ai"
+    msg["To"] = to
+    if cc:
+        msg["Cc"] = cc
+        # Candidates hit plain "Reply", not "Reply-All", so Cc alone misses the recruiter.
+        # Reply-To routes the candidate's direct reply straight to the recruiter.
+        msg["Reply-To"] = cc
+    msg["Subject"] = f"Final interview invitation — {job_title}"
+    msg.set_content(body_text)
+
+    if not smtp_configured():
+        log.info(
+            "EMAIL (render-only, SMTP not configured)\n  to: %s\n  cc: %s\n  subject: %s\n%s\n%s",
+            to, cc, msg["Subject"], body_text, "-" * 60,
+        )
+        return {"sent": False, "mode": "render-only", "to": to, "cc": cc}
+
+    import aiosmtplib
+
+    # aiosmtplib derives recipients from the To/Cc headers, so the recruiter (Cc) is
+    # included on the same thread automatically.
+    await aiosmtplib.send(
+        msg,
+        hostname=settings.SMTP_HOST,
+        port=settings.SMTP_PORT,
+        username=settings.SMTP_USER,
+        password=settings.SMTP_PASSWORD.replace(" ", ""),
+        start_tls=settings.SMTP_STARTTLS,
+    )
+    log.info("EMAIL (final-interview) sent to %s (cc=%s)", to, cc)
+    return {"sent": True, "mode": "smtp", "to": to, "cc": cc}

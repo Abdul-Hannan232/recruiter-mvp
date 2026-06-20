@@ -23,7 +23,6 @@ from app.database.session import SessionLocal
 from app.models.db import (
     Candidate,
     CandidateStatus,
-    CodeSubmission,
     Interview,
     JobDescription,
 )
@@ -33,13 +32,17 @@ log = logging.getLogger("agents.evaluator")
 
 SYSTEM = (
     "You are a Senior HR Technical Evaluator. Assess the candidate strictly and "
-    "fairly using ONLY the supplied resume, job description, interview transcript, "
-    "and code submissions. Do not invent facts not present in the inputs.\n\n"
+    "fairly using ONLY the supplied resume, job description, and interview "
+    "transcript. Do not invent facts not present in the inputs.\n\n"
+    "You will NOT receive raw code submissions. You must base your `code_review` and "
+    "`technical_score` strictly on the transcript, analyzing how well the candidate "
+    "verbally explained, defended, and optimized their code during the AI's "
+    "cross-examination.\n\n"
     "Respond with ONLY a single valid JSON object (no prose, no markdown fences) "
     "matching EXACTLY this schema:\n"
     "{\n"
-    '  "technical_score": <int 0-100>,\n'
-    '  "communication_score": <int 0-100>,\n'
+    '  "technical_score": <int 0-10>,\n'
+    '  "communication_score": <int 0-10>,\n'
     '  "strengths": [<string>, ...],\n'
     '  "weaknesses": [<string>, ...],\n'
     '  "code_review": "<string analyzing their code submissions>",\n'
@@ -54,7 +57,6 @@ def _build_user_prompt(
     candidate: Candidate,
     jd: JobDescription | None,
     transcript: str,
-    code_blob: str,
 ) -> str:
     requirements = jd.requirements_text if jd else "No specific requirements on file."
     title = jd.title if jd else "(unspecified role)"
@@ -62,7 +64,6 @@ def _build_user_prompt(
         f"# JOB: {title}\n## REQUIREMENTS\n{requirements}\n\n"
         f"# CANDIDATE RESUME\n{candidate.original_resume_text}\n\n"
         f"# INTERVIEW TRANSCRIPT\n{transcript}\n\n"
-        f"# CODE SUBMISSIONS\n{code_blob}\n\n"
         "Evaluate now and return the JSON object."
     )
 
@@ -110,23 +111,14 @@ async def evaluate_interview(candidate_id: UUID, db: AsyncSession) -> dict:
         "(no transcript captured)"
     )
 
-    subs = (
-        await db.execute(
-            select(CodeSubmission)
-            .where(CodeSubmission.candidate_id == candidate_id)
-            .order_by(CodeSubmission.created_at)
-        )
-    ).scalars().all()
-    code_blob = (
-        "\n\n".join(f"[{s.language}] ({s.note or 'submission'}):\n{s.code_text}" for s in subs)
-        or "No code was submitted."
-    )
-
     # --- LLM evaluation (deepseek-v4-pro, forced JSON) ----------------------
+    # No raw code is supplied: the technical signal is the transcript of the AI's
+    # cross-examination (see SYSTEM prompt). code_review/technical_score are graded
+    # on how the candidate verbally explained and defended their code.
     raw = await chat(
         [
             {"role": "system", "content": SYSTEM},
-            {"role": "user", "content": _build_user_prompt(candidate, jd, transcript, code_blob)},
+            {"role": "user", "content": _build_user_prompt(candidate, jd, transcript)},
         ],
         model=settings.DEEPSEEK_PRO_MODEL,
         temperature=0.0,

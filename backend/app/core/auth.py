@@ -162,6 +162,7 @@ class AuthIdentity:
 
     user_id: UUID
     email: str | None
+    city: str | None
 
 
 async def authenticated_principal(
@@ -178,7 +179,12 @@ async def authenticated_principal(
         user_id = UUID(payload["sub"])
     except (KeyError, ValueError) as e:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Token missing a valid subject") from e
-    return AuthIdentity(user_id=user_id, email=payload.get("email"))
+    # city is set at signup into Supabase user_metadata (options.data), so it rides in
+    # the JWT's user_metadata claim — the auth-level location source of truth.
+    metadata = payload.get("user_metadata") or {}
+    return AuthIdentity(
+        user_id=user_id, email=payload.get("email"), city=metadata.get("city")
+    )
 
 
 def require_roles(*allowed: UserRole):

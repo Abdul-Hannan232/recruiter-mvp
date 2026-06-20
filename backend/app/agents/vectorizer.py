@@ -32,9 +32,8 @@ class EmptyResume(ValueError):
 
 _EXTRACT_SYSTEM = (
     "You are a resume parser. From the resume text, extract the candidate's full "
-    "name and email address. Respond with ONLY a JSON object of the exact form "
-    '{"full_name": "...", "email": "..."} and nothing else. Use an empty string '
-    "for any field you cannot find."
+    "name. Respond with ONLY a JSON object of the exact form "
+    '{"full_name": "..."} and nothing else. Use an empty string if you cannot find it.'
 )
 
 
@@ -53,7 +52,11 @@ def extract_text(filename: str, blob: bytes) -> str:
 
 
 async def extract_profile(text: str) -> dict[str, str]:
-    """LLM-extract {full_name, email} from resume text (mocked in local dev)."""
+    """LLM-extract {full_name} from resume text.
+
+    Email is intentionally NOT parsed here: the candidate's verified Supabase Auth
+    email is the single, absolute source of truth and is bound directly in ingest().
+    """
     raw = await chat(
         [
             {"role": "system", "content": _EXTRACT_SYSTEM},
@@ -62,10 +65,7 @@ async def extract_profile(text: str) -> dict[str, str]:
         model=settings.DEEPSEEK_FLASH_MODEL,  # Agent 1: fast extraction
     )
     data = json.loads(raw)
-    return {
-        "full_name": (data.get("full_name") or "Unknown Candidate").strip(),
-        "email": (data.get("email") or "").strip(),
-    }
+    return {"full_name": (data.get("full_name") or "Unknown Candidate").strip()}
 
 
 async def ingest(
@@ -73,10 +73,18 @@ async def ingest(
     filename: str,
     blob: bytes,
     *,
+    email: str,
+    city: str | None = None,
     user_id: UUID | None = None,
     role: UserRole = UserRole.CANDIDATE,
 ) -> Candidate:
     """Full Agent-1 upload path → a persisted, embedded Candidate in the global POOL.
+
+    ``email`` is REQUIRED and is the candidate's verified Supabase Auth email — the
+    single, absolute source of truth for the contact address. It is bound to the row
+    verbatim; the résumé is never consulted for an email. (All resumes are uploaded by
+    the authenticated candidate themselves via /candidates/me/resume, so an auth email
+    always exists.)
 
     When ``user_id`` is supplied (candidate self-upload), the row is linked to the
     Supabase identity and UPSERTED — a re-upload refreshes that candidate's record
@@ -107,7 +115,10 @@ async def ingest(
 
     # Always refresh the parsed resume content + embedding.
     candidate.full_name = profile["full_name"]
-    candidate.email = profile["email"]
+    # Verified Supabase Auth email — bound directly, never sourced from the résumé.
+    candidate.email = email
+    # City from the verified Supabase Auth metadata (location tracking).
+    candidate.city = city
     candidate.original_resume_text = text
     candidate.resume_embedding = vector
 

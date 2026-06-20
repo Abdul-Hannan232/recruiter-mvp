@@ -4,17 +4,13 @@ Agent 4 — Interviewer.
 Owns the live interview session. Two responsibilities:
   (a) Mint an ephemeral OpenAI Realtime token bound to an interview-flavoured
       system prompt so the browser can open WebRTC directly to OpenAI.
-  (b) Track active WebSocket connections from the React code editor and
-      forward textual "code context" updates into the live Realtime session
-      via server-side event injection.
+  (b) Durably persist code the candidate submits during the live interview, so
+      Agent 5 always has the real artifact to grade.
 
-Raw audio NEVER flows through FastAPI. This module only routes structured
-text/code events into OpenAI's session context.
+Raw audio NEVER flows through FastAPI; the browser talks to OpenAI directly over
+WebRTC. This module only issues the session ticket and records code submissions.
 """
-import asyncio
-import json
 import logging
-from dataclasses import dataclass, field
 from uuid import UUID
 
 import httpx
@@ -24,49 +20,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.realtime import mint_ephemeral_token
-from app.models.db import Candidate, CandidateStatus, CodeSubmission, JobDescription
-from app.models.schemas import CodeInjectionPayload
+from app.models.db import Candidate, CandidateStatus, JobDescription
 
 log = logging.getLogger("agents.interviewer")
 
 
 INTERVIEW_SYSTEM = (
     "You are a senior technical interviewer conducting a live voice interview. "
-    "Be concise, ask one question at a time, and probe edge cases. "
-    "When the candidate's code editor updates, the system will inject a "
-    "[CODE UPDATE] block; reason about it before your next utterance."
+    "Conduct the interview in a natural, code-switching mix of Urdu and English — the "
+    "way Pakistani tech professionals actually speak: keep technical terms in English "
+    "while explanations, transitions, and rapport flow in Urdu. Your spoken audio MUST "
+    "be natively bilingual (Urdu + English); any text you emit may be Roman Urdu + "
+    "English. Maintain a professional, technical tone throughout. Be concise, ask one "
+    "question at a time, and probe edge cases."
 )
-
-
-@dataclass
-class LiveSession:
-    candidate_id: UUID
-    openai_session_id: str
-    code_history: list[dict] = field(default_factory=list)
-
-
-class InterviewerRegistry:
-    """Process-local registry. FastAPI BackgroundTasks share this in-process."""
-
-    def __init__(self) -> None:
-        self._sessions: dict[UUID, LiveSession] = {}
-        self._lock = asyncio.Lock()
-
-    async def open(self, candidate_id: UUID, openai_session_id: str) -> LiveSession:
-        async with self._lock:
-            sess = LiveSession(candidate_id=candidate_id, openai_session_id=openai_session_id)
-            self._sessions[candidate_id] = sess
-            return sess
-
-    async def close(self, candidate_id: UUID) -> LiveSession | None:
-        async with self._lock:
-            return self._sessions.pop(candidate_id, None)
-
-    def get(self, candidate_id: UUID) -> LiveSession | None:
-        return self._sessions.get(candidate_id)
-
-
-registry = InterviewerRegistry()
 
 
 # A candidate may fetch a token on first entry (OUTREACH_SENT) or when rejoining
@@ -103,7 +70,7 @@ async def generate_webrtc_token(candidate_id: UUID, db: AsyncSession) -> dict:
 
     # Mint the real ephemeral token BEFORE mutating state, so a failed upstream
     # call doesn't strand the candidate in INTERVIEWING. mint_ephemeral_token
-    # performs the async httpx POST to /v1/realtime/sessions.
+    # performs the async httpx POST to /v1/realtime/client_secrets (GA endpoint).
     try:
         payload = await mint_ephemeral_token(instructions=INTERVIEW_SYSTEM)
         token = payload["value"]  # GA: ephemeral key is the top-level "value"
@@ -195,95 +162,3 @@ async def generate_webrtc_token_by_room(room_id: UUID, db: AsyncSession) -> dict
         "model": settings.OPENAI_REALTIME_MODEL,
         "candidate_id": str(candidate.id),
     }
-
-
-async def start_session(candidate_id: UUID) -> dict:
-    """Mint ephemeral token for browser WebRTC. Returns OpenAI's session payload."""
-    payload = await mint_ephemeral_token(instructions=INTERVIEW_SYSTEM)
-    await registry.open(candidate_id, payload["session"]["id"])
-    return payload
-
-
-def format_code_block(p: CodeInjectionPayload) -> str:
-    """Convert an editor payload into a textual context string for the model."""
-    header = f"[CODE UPDATE] lang={p.language}"
-    if p.cursor_line is not None:
-        header += f" cursor_line={p.cursor_line}"
-    if p.note:
-        header += f" note={p.note!r}"
-    return f"{header}\n```{p.language}\n{p.code}\n```"
-
-
-async def submit_code(
-    db: AsyncSession,
-    candidate_id: UUID,
-    language: str,
-    code: str,
-    note: str | None = None,
-) -> CodeSubmission:
-    """Single-Write code submission. Persists the submission to Supabase ATOMICALLY
-    first (so Agent 5 always has the durable artifact), THEN best-effort forwards the
-    snapshot into the live OpenAI Realtime session so Agent 4 can speak about it.
-
-    A failed forward never loses the data — the DB row is already committed. A failed
-    persist raises before any forward, so the model never sees un-recorded code.
-    """
-    candidate = await db.get(Candidate, candidate_id)
-    if candidate is None:
-        raise HTTPException(status_code=404, detail="Candidate not found")
-    if candidate.status != CandidateStatus.INTERVIEWING:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Code can only be submitted during an active interview "
-            f"(status={candidate.status.value})",
-        )
-
-    # 1) Durable write first — one atomic INSERT.
-    submission = CodeSubmission(
-        candidate_id=candidate_id, language=language, code_text=code, note=note
-    )
-    db.add(submission)
-    await db.commit()
-    await db.refresh(submission)
-
-    # 2) Best-effort forward into the live model context (inject_code swallows its own
-    #    network errors; the durable record above is unaffected either way).
-    await inject_code(
-        CodeInjectionPayload(candidate_id=candidate_id, language=language, code=code, note=note)
-    )
-    return submission
-
-
-async def inject_code(payload: CodeInjectionPayload) -> None:
-    """
-    Push the editor snapshot into the live OpenAI Realtime session.
-
-    This uses the Realtime REST surface to append a conversation item server-side,
-    so the model sees the latest code on its next turn without the browser having
-    to relay it over WebRTC's audio data channel.
-    """
-    session = registry.get(payload.candidate_id)
-    if session is None:
-        log.warning("inject_code.no_session", extra={"candidate_id": str(payload.candidate_id)})
-        return
-
-    session.code_history.append({"language": payload.language, "code": payload.code})
-
-    event = {
-        "type": "conversation.item.create",
-        "item": {
-            "type": "message",
-            "role": "user",
-            "content": [{"type": "input_text", "text": format_code_block(payload)}],
-        },
-    }
-    url = f"https://api.openai.com/v1/realtime/sessions/{session.openai_session_id}/events"
-    headers = {
-        "Authorization": f"Bearer {settings.OPENAI_API_KEY}",
-        "Content-Type": "application/json",
-    }
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            await client.post(url, content=json.dumps(event), headers=headers)
-    except httpx.HTTPError as e:
-        log.error("inject_code.http_error", extra={"err": str(e)})

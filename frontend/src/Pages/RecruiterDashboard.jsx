@@ -20,10 +20,12 @@ function safeParse(json) {
 export default function RecruiterDashboard() {
   const [jobs, setJobs] = useState([]);
   const [graded, setGraded] = useState([]);
-  const [form, setForm] = useState({ title: "", requirements_text: "" });
+  const [form, setForm] = useState({ title: "", requirements_text: "", city: "" });
   const [posting, setPosting] = useState(false);
   const [active, setActive] = useState(null); // candidate open in the scorecard drawer
   const [busyId, setBusyId] = useState(null);
+  const [closingId, setClosingId] = useState(null);
+  const [deletingId, setDeletingId] = useState(null);
 
   const jobTitle = useMemo(() => {
     const m = {};
@@ -42,19 +44,62 @@ export default function RecruiterDashboard() {
 
   async function postJob(e) {
     e.preventDefault();
-    if (!form.title.trim() || form.requirements_text.trim().length < 20) {
-      alert("Title and a job description of at least 20 characters are required.");
+    if (!form.title.trim() || !form.city.trim() || form.requirements_text.trim().length < 20) {
+      alert("Title, city, and a job description of at least 20 characters are required.");
       return;
     }
     setPosting(true);
     try {
       const jd = await Jobs.create(form); // POST /jobs -> Agent 1 JD vectorization
       setJobs((js) => [...js, jd]);
-      setForm({ title: "", requirements_text: "" });
+      setForm({ title: "", requirements_text: "", city: "" });
     } catch (err) {
       alert(`Failed to post job: ${err?.response?.data?.detail ?? err.message}`);
     } finally {
       setPosting(false);
+    }
+  }
+
+  // HITL: book the final human interview (email-only). The candidate stays in the queue
+  // (now FINAL_INTERVIEW_SCHEDULED) so the scorecard remains visible until Hire/Reject —
+  // we just refresh its status in place from the returned record.
+  async function schedule(candidateId, data) {
+    const updated = await Candidates.scheduleFinalInterview(candidateId, data);
+    setGraded((prev) => prev.map((c) => (c.id === candidateId ? updated : c)));
+  }
+
+  // Close a role: deactivate it + release in-flight candidates to the pool, then refresh
+  // the review queue so the reset candidates drop out.
+  async function closeJob(id) {
+    if (!window.confirm("Close this role? In-flight candidates return to the talent pool.")) {
+      return;
+    }
+    setClosingId(id);
+    try {
+      const updated = await Jobs.closeJob(id);
+      setJobs((js) => js.map((j) => (j.id === id ? updated : j)));
+      refreshGraded();
+    } catch (err) {
+      alert(`Failed to close job: ${err?.response?.data?.detail ?? err.message}`);
+    } finally {
+      setClosingId(null);
+    }
+  }
+
+  // Hard-delete a single role (permanent). Releases its candidates, then drops it locally.
+  async function deleteJob(id) {
+    if (!window.confirm("Are you sure you want to permanently delete this job?")) {
+      return;
+    }
+    setDeletingId(id);
+    try {
+      await Jobs.deleteJob(id);
+      setJobs((js) => js.filter((j) => j.id !== id));
+      refreshGraded();
+    } catch (err) {
+      alert(`Failed to delete job: ${err?.response?.data?.detail ?? err.message}`);
+    } finally {
+      setDeletingId(null);
     }
   }
 
@@ -102,7 +147,9 @@ export default function RecruiterDashboard() {
             </div>
             <div>
               <p className="text-sm text-slate-500">Your open roles</p>
-              <p className="text-3xl font-bold text-slate-900">{jobs.length}</p>
+              <p className="text-3xl font-bold text-slate-900">
+                {jobs.filter((j) => j.is_active).length}
+              </p>
             </div>
           </div>
         </div>
@@ -116,6 +163,12 @@ export default function RecruiterDashboard() {
               placeholder="Job title"
               value={form.title}
               onChange={(e) => setForm({ ...form, title: e.target.value })}
+            />
+            <input
+              className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20"
+              placeholder="City (required location)"
+              value={form.city}
+              onChange={(e) => setForm({ ...form, city: e.target.value })}
             />
             <textarea
               className="h-36 w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20"
@@ -132,7 +185,61 @@ export default function RecruiterDashboard() {
           </form>
         </div>
 
-        {/* Graded candidate queue (PENDING_RECRUITER, this recruiter only) */}
+        {/* Your roles — lifecycle management */}
+        {jobs.length > 0 && (
+          <div className="mb-8">
+            <h2 className="mb-4 text-2xl font-semibold text-slate-900">Your roles</h2>
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              {jobs.map((j) => (
+                <div
+                  key={j.id}
+                  className="flex flex-col rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <h3 className="truncate text-base font-bold text-slate-900">{j.title}</h3>
+                      <p className="text-sm text-slate-500">{j.city || "—"}</p>
+                    </div>
+                    <span
+                      className={`shrink-0 rounded-full px-3 py-1 text-xs font-bold ${
+                        j.is_active
+                          ? "bg-emerald-100 text-emerald-700"
+                          : "bg-slate-200 text-slate-600"
+                      }`}
+                    >
+                      {j.is_active ? "Active" : "Closed"}
+                    </span>
+                  </div>
+                  {!j.is_active && (
+                    <p className="mt-4 text-center text-xs text-slate-400">
+                      Role closed — candidates released to pool
+                    </p>
+                  )}
+                  <div className="mt-4 flex gap-2">
+                    {j.is_active && (
+                      <button
+                        onClick={() => closeJob(j.id)}
+                        disabled={closingId === j.id}
+                        className="flex-1 rounded-xl border border-rose-200 bg-rose-50 py-2 text-sm font-semibold text-rose-700 transition hover:bg-rose-100 disabled:opacity-50"
+                      >
+                        {closingId === j.id ? "Closing…" : "Close Job"}
+                      </button>
+                    )}
+                    <button
+                      onClick={() => deleteJob(j.id)}
+                      disabled={deletingId === j.id}
+                      className="flex-1 rounded-xl bg-rose-600 py-2 text-sm font-semibold text-white transition hover:bg-rose-500 disabled:opacity-50"
+                    >
+                      {deletingId === j.id ? "Deleting…" : "Delete"}
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Graded candidate queue (PENDING_RECRUITER + FINAL_INTERVIEW_SCHEDULED) */}
         <div>
           <h2 className="text-2xl font-semibold text-slate-900">Interviewed &amp; graded</h2>
           <p className="mb-6 text-slate-500">
@@ -169,11 +276,16 @@ export default function RecruiterDashboard() {
                       </span>
                     </div>
 
-                    <div className="mt-5 flex items-center gap-2">
+                    <div className="mt-5 flex flex-wrap items-center gap-2">
                       <span className="inline-flex items-center gap-1.5 rounded-full bg-slate-900 px-3 py-1 text-xs font-semibold text-white">
                         <Star size={12} className="text-amber-400" />
                         AI Score {c.ai_evaluation_score ?? "—"}
                       </span>
+                      {c.status === "final_interview_scheduled" && (
+                        <span className="inline-flex items-center rounded-full bg-indigo-100 px-3 py-1 text-xs font-semibold text-indigo-700">
+                          Scheduled
+                        </span>
+                      )}
                     </div>
 
                     <button
@@ -200,6 +312,7 @@ export default function RecruiterDashboard() {
           onClose={() => setActive(null)}
           onHire={(id) => decide("hire", id)}
           onReject={(id) => decide("reject", id)}
+          onSchedule={schedule}
         />
       )}
     </div>

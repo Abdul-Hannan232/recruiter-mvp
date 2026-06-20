@@ -47,8 +47,16 @@ _ALLOWED: dict[CandidateStatus, set[CandidateStatus]] = {
         CandidateStatus.POOL,
         CandidateStatus.REJECTED,
     },
-    # Human recruiter (stage-2) decides the terminal outcome.
+    # Human recruiter (stage-2) decides the terminal outcome, or books a final human
+    # interview before deciding.
     CandidateStatus.PENDING_RECRUITER: {
+        CandidateStatus.FINAL_INTERVIEW_SCHEDULED,
+        CandidateStatus.HIRED,
+        CandidateStatus.POOL,
+        CandidateStatus.REJECTED,
+    },
+    # Final human interview booked; the recruiter still makes the terminal call after it.
+    CandidateStatus.FINAL_INTERVIEW_SCHEDULED: {
         CandidateStatus.HIRED,
         CandidateStatus.POOL,
         CandidateStatus.REJECTED,
@@ -69,14 +77,15 @@ _HIRE_FROM = {
     CandidateStatus.INTERVIEW_SCHEDULED,
     CandidateStatus.INTERVIEW_COMPLETED,
     CandidateStatus.PENDING_RECRUITER,
+    CandidateStatus.FINAL_INTERVIEW_SCHEDULED,
 }
 _REJECT_FROM = {
     CandidateStatus.SHORTLISTED,
     CandidateStatus.INTERVIEWED,
     CandidateStatus.INTERVIEW_COMPLETED,
     CandidateStatus.PENDING_RECRUITER,
+    CandidateStatus.FINAL_INTERVIEW_SCHEDULED,
 }
-_UNCALLED_FROM = {CandidateStatus.SHORTLISTED, CandidateStatus.PENDING_RECRUITER}
 
 
 class IllegalTransition(RuntimeError):
@@ -134,20 +143,6 @@ async def reject(session: AsyncSession, candidate_id: UUID) -> Candidate:
     c.job_id = None  # unlock from the job; free for future matching (but penalised)
     c.interview_room_id = None
     c.score_penalty = (c.score_penalty or 0.0) + REJECT_PENALTY
-    await session.commit()
-    await session.refresh(c)
-    return c
-
-
-async def release_uncalled(session: AsyncSession, candidate_id: UUID) -> Candidate:
-    """HITL Uncalled Archive -> back to baseline POOL. Core metrics (embedding,
-    ai_evaluation_score, score_penalty) are left UNCHANGED — no penalty applied."""
-    c = await _lock_candidate(session, candidate_id)
-    if c.status not in _UNCALLED_FROM:
-        raise IllegalTransition(f"Cannot archive (uncalled) from {c.status.value}")
-    c.status = CandidateStatus.POOL
-    c.job_id = None
-    c.interview_room_id = None
     await session.commit()
     await session.refresh(c)
     return c

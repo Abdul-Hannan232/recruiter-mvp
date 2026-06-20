@@ -5,6 +5,7 @@ Generates a personalised outreach email via the OpenAI Chat Completions REST API
 and (in this MVP) logs it. A real SMTP/SendGrid call would slot in here as a
 BackgroundTask side-effect — still no Celery, still no Redis.
 """
+import asyncio
 import logging
 from uuid import UUID, uuid4
 
@@ -57,7 +58,8 @@ async def run(session: AsyncSession, candidate_id: UUID) -> str:
         raise ValueError(f"Job {candidate.job_id} not found")
 
     prompt = (
-        f"JOB TITLE: {jd.title}\n\nJOB DESCRIPTION:\n{jd.requirements_text}\n\n"
+        f"JOB TITLE: {jd.title}\n\nJOB LOCATION: {jd.city or 'Remote'}\n\n"
+        f"JOB DESCRIPTION:\n{jd.requirements_text}\n\n"
         f"CANDIDATE NAME: {candidate.full_name}\n\nRESUME:\n{candidate.original_resume_text}"
     )
     message = await chat(
@@ -79,19 +81,32 @@ async def run(session: AsyncSession, candidate_id: UUID) -> str:
 _OUTREACH_SYSTEM = (
     "You are an autonomous recruiting coordinator. Write a brief, warm, professional "
     "outreach email (<=150 words) inviting the candidate to an interview. Reference one "
-    "concrete strength from their resume that aligns with the job requirements. You MUST "
-    "include, verbatim and on its own line, the interview link given in the prompt. Sign "
-    "off as 'The Hiring Team'."
+    "concrete strength from their resume that aligns with the job requirements. When a "
+    "job location is provided, mention it naturally (e.g. 'for our team in <City>'). You "
+    "MUST include, verbatim and on its own line, the interview link given in the prompt. "
+    "Sign off as 'The Hiring Team'."
 )
+
+
+# Cap on simultaneous draft+send fan-out. Keeps the outreach burst from tripping
+# DeepSeek / SMTP rate limits while still overlapping the (slow) network I/O.
+_OUTREACH_CONCURRENCY = 8
 
 
 async def run_outreach_cycle(job_id: UUID, db: AsyncSession) -> dict[str, int]:
     """Agent 3 — autonomous outreach for every MATCHED candidate locked to a job.
 
-    For each candidate the LLM (mocked locally) drafts a personalised email that must
-    embed the candidate's unique interview link. The email is "sent" by logging it, the
-    candidate advances to OUTREACH_SENT, and a single commit persists the batch.
-    No recruiter review; this runs end-to-end on its own.
+    Drafting (LLM) and sending (SMTP) for ALL matched candidates run CONCURRENTLY via
+    asyncio.gather (bounded by a semaphore). This is the fix for the outreach bottleneck:
+    the previous version awaited each candidate's draft+send sequentially, so N matches
+    took N x (LLM + SMTP) latency (the 10-20 min delays), and a single mid-loop failure
+    aborted the whole batch BEFORE the commit — stranding every candidate after the first
+    (the "only one contacted" symptom). Now each candidate's I/O overlaps, failures are
+    isolated per-candidate via return_exceptions, and the batch commits exactly once.
+
+    The gathered coroutines perform pure network I/O and NEVER touch the shared
+    AsyncSession (which is not safe for concurrent use); all session mutation happens
+    sequentially afterwards. No recruiter review; this runs end-to-end on its own.
     """
     jd = await db.get(JobDescription, job_id)
     if jd is None:
@@ -101,39 +116,68 @@ async def run_outreach_cycle(job_id: UUID, db: AsyncSession) -> dict[str, int]:
         Candidate.job_id == job_id,
         Candidate.status == CandidateStatus.MATCHED,
     )
-    candidates = (await db.execute(stmt)).scalars().all()
+    candidates = list((await db.execute(stmt)).scalars().all())
+    if not candidates:
+        return {"outreach_completed": 0}
 
-    completed = 0
-    for candidate in candidates:
-        # Mint a tokenized interview room binding this candidate to the target job,
-        # then build the dashboard link deterministically in Python (never trusted to
-        # the LLM) and instruct the model to embed this exact URL in the body.
-        candidate.interview_room_id = uuid4()
-        interview_link = _room_link(candidate.interview_room_id)
+    sem = asyncio.Semaphore(_OUTREACH_CONCURRENCY)
+
+    async def _draft_and_send(candidate: Candidate) -> UUID:
+        # uuid4 + link are CPU-only; the awaits below are pure network I/O and never
+        # touch `db`, so overlapping these under gather is safe. The room token is
+        # RETURNED (not assigned here) so the session is mutated only after all I/O
+        # resolves, in the sequential phase below. The link is built deterministically
+        # in Python (never trusted to the LLM) and the model is told to embed it verbatim.
+        room_id = uuid4()
+        interview_link = _room_link(room_id)
         prompt = (
             f"JOB TITLE: {jd.title}\n\n"
+            f"JOB LOCATION: {jd.city or 'Remote'}\n\n"
             f"JOB REQUIREMENTS:\n{jd.requirements_text}\n\n"
             f"CANDIDATE NAME: {candidate.full_name}\n\n"
             f"CANDIDATE RESUME:\n{candidate.original_resume_text}\n\n"
             f"Write the personalised outreach email now. You MUST include this exact "
             f"interview link in the email body:\n{interview_link}"
         )
-        email_body = await chat(
-            [
-                {"role": "system", "content": _OUTREACH_SYSTEM},
-                {"role": "user", "content": prompt},
-            ],
-            model=settings.DEEPSEEK_FLASH_MODEL,  # Agent 3: outreach drafting
-            temperature=0.5,
-        )
+        async with sem:
+            email_body = await chat(
+                [
+                    {"role": "system", "content": _OUTREACH_SYSTEM},
+                    {"role": "user", "content": prompt},
+                ],
+                model=settings.DEEPSEEK_FLASH_MODEL,  # Agent 3: outreach drafting
+                temperature=0.5,
+            )
+            await send_email(
+                to=candidate.email,
+                subject=f"Interview invitation — {jd.title}",
+                html_body=_render_html(email_body, interview_link),
+            )
+        return room_id
 
-        await send_email(
-            to=candidate.email,
-            subject=f"Interview invitation — {jd.title}",
-            html_body=_render_html(email_body, interview_link),
-        )
+    results = await asyncio.gather(
+        *(_draft_and_send(c) for c in candidates), return_exceptions=True
+    )
 
-        # Agent 3 handoff: candidate is now SHORTLISTED, awaiting the recruiter's HITL call.
+    completed = 0
+    for candidate, result in zip(candidates, results):
+        if isinstance(result, Exception):
+            # Isolated failure: this candidate stays MATCHED for the next cycle to retry;
+            # everyone else still goes out.
+            #
+            # asyncio.gather(return_exceptions=True) hands the exception back as a *value*,
+            # so there is NO active exception context here — a bare log.exception() would
+            # dump "NoneType: None". We pass the captured exception explicitly via
+            # exc_info=result to force the full, unedited traceback with line numbers.
+            log.error(
+                "Outreach task encountered an unhandled exception for candidate %s:",
+                candidate.id,
+                exc_info=result,
+            )
+            continue
+        # Agent 3 handoff: bind the room token and advance MATCHED -> SHORTLISTED
+        # (awaiting the recruiter's HITL call) only for candidates we actually reached.
+        candidate.interview_room_id = result
         candidate.status = CandidateStatus.SHORTLISTED
         completed += 1
 
@@ -158,7 +202,8 @@ async def shortlist_and_invite(
     candidate.interview_room_id = uuid4()
     interview_link = _room_link(candidate.interview_room_id)
     prompt = (
-        f"JOB TITLE: {jd.title}\n\nJOB REQUIREMENTS:\n{jd.requirements_text}\n\n"
+        f"JOB TITLE: {jd.title}\n\nJOB LOCATION: {jd.city or 'Remote'}\n\n"
+        f"JOB REQUIREMENTS:\n{jd.requirements_text}\n\n"
         f"CANDIDATE NAME: {candidate.full_name}\n\nCANDIDATE RESUME:\n"
         f"{candidate.original_resume_text}\n\nWrite the personalised outreach email now. "
         f"You MUST include this exact interview link in the email body:\n{interview_link}"
@@ -209,8 +254,16 @@ async def run_full_pipeline_bg(job_id: UUID) -> None:
     from app.agents import matcher  # local import keeps matcher<->coordinator decoupled
 
     async with SessionLocal() as session:
+        jd = await session.get(JobDescription, job_id)
+        if jd is None or not jd.is_active:
+            return  # job deleted or closed before the task ran — nothing to do
         summary = await matcher.run_matching_cycle(job_id, session)
         if summary.get("matched_and_locked", 0) > 0:
+            # The recruiter may have closed the role mid-run; re-read DB state before
+            # spending tokens/emails on outreach for a now-closed job.
+            await session.refresh(jd)
+            if not jd.is_active:
+                return
             await run_outreach_cycle(job_id, session)
 
 

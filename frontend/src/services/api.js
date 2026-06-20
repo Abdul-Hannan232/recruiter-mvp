@@ -23,6 +23,10 @@ export const Jobs = {
   list: () => api.get("/jobs").then((r) => r.data),
   create: (payload) => api.post("/jobs", payload).then((r) => r.data),
   get: (id) => api.get(`/jobs/${id}`).then((r) => r.data),
+  // Close a role: deactivates it and resets in-flight candidates back to the POOL.
+  closeJob: (id) => api.post(`/jobs/${id}/close`).then((r) => r.data),
+  // Hard-delete a single role (strictly scoped to id + owner). Releases its candidates.
+  deleteJob: (id) => api.delete(`/jobs/${id}`).then((r) => r.data),
 };
 
 export const Candidates = {
@@ -37,9 +41,14 @@ export const Candidates = {
         headers: { "Content-Type": "multipart/form-data" },
       })
       .then((r) => r.data),
+  // Candidate self-service profile sync (keeps the DB row aligned with auth metadata).
+  updateProfile: (data) => api.patch("/candidates/me", data).then((r) => r.data),
   // HITL recruiter overrides — each returns the updated candidate record.
   hire: (id) => api.post(`/candidates/${id}/hire`).then((r) => r.data),
   reject: (id) => api.post(`/candidates/${id}/reject`).then((r) => r.data),
+  // HITL final handoff: email-only human-interview scheduling (no calendar OAuth).
+  scheduleFinalInterview: (id, data) =>
+    api.post(`/candidates/${id}/schedule-human-interview`, data).then((r) => r.data),
 };
 
 export const Interviews = {

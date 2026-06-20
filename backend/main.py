@@ -13,7 +13,6 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import router as api_router
-from app.api import realtime_ws
 from app.core.config import settings
 from app.database.session import init_db
 
@@ -40,9 +39,9 @@ app.add_middleware(
 )
 
 app.include_router(api_router, prefix="/api/v1")
-# Agent 4 code-context WebSocket. Mounted at root (not /api/v1) to match the
-# frontend's ws://host/ws/code/{id} path.
-app.include_router(realtime_ws.router)
+# Phase 3 pivot: the Agent 4 code-context WebSocket (/ws/code/{id}) was abandoned.
+# The Monaco editor now pushes code straight into the live OpenAI Realtime session
+# over the browser's WebRTC data channel, so the server is no longer in that path.
 
 
 @app.get("/health", tags=["meta"])

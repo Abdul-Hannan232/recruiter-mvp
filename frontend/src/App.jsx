@@ -2,10 +2,10 @@ import { Route, Routes, useLocation } from "react-router-dom";
 import Navbar from "./components/Navbar.jsx";
 import Footer from "./components/Footer.jsx";
 import Home from "./Pages/Home.jsx";
-import Jobs from "./Pages/Jobs.jsx";
-import JobsDetailsPage from "./Pages/JobsDetailsPage.jsx";
 import RecruiterDashboard from "./Pages/RecruiterDashboard.jsx";
+import RecruiterProfile from "./Pages/RecruiterProfile.jsx";
 import CandidatePortal from "./Pages/CandidatePortal.jsx";
+import CandidateProfile from "./Pages/CandidateProfile.jsx";
 import InterviewRoom from "./components/InterviewRoom.jsx";
 import Login from "./Pages/Login.jsx";
 import Signup from "./Pages/Signup.jsx";
@@ -36,10 +36,8 @@ export default function App() {
       <Navbar />
       <main className="flex-1">
         <Routes>
-          {/* Public front door */}
+          {/* Public front door (headhunter model — no public job board) */}
           <Route path="/" element={<Home />} />
-          <Route path="/jobs" element={<Jobs />} />
-          <Route path="/jobs/:id" element={<JobsDetailsPage />} />
           <Route path="/login" element={<Login />} />
           <Route path="/signup" element={<Signup />} />
 
@@ -52,6 +50,14 @@ export default function App() {
               </ProtectedRoute>
             }
           />
+          <Route
+            path="/settings"
+            element={
+              <ProtectedRoute requiredRole="recruiter">
+                <RecruiterProfile />
+              </ProtectedRoute>
+            }
+          />
 
           {/* Zero-Click candidate portal: sign up -> upload resume -> global pool. */}
           <Route
@@ -59,6 +65,14 @@ export default function App() {
             element={
               <ProtectedRoute requiredRole="candidate">
                 <CandidatePortal />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/profile"
+            element={
+              <ProtectedRoute requiredRole="candidate">
+                <CandidateProfile />
               </ProtectedRoute>
             }
           />
